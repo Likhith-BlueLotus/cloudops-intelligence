@@ -14,12 +14,14 @@ Exposes the OpenEnv-standard HTTP + WebSocket surface:
   GET  /docs          Swagger UI
 """
 
+import asyncio
 import os
 import time
+import uuid
 from contextlib import asynccontextmanager
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -46,8 +48,42 @@ app: FastAPI = create_fastapi_app(
     concurrency_config=_concurrency,
 )
 
+# ---------------------------------------------------------------------------
+# Session store — persists environment state across HTTP requests.
+#
+# The OpenEnv framework's built-in HTTP handlers create a fresh env instance
+# per request (stateless), which breaks multi-step episodes. We override
+# /reset, /step, and /state with our own handlers that keep the env alive
+# for the duration of a session.
+# ---------------------------------------------------------------------------
+_SESSION_TIMEOUT_S: float = 300.0  # 5 minutes idle
+
+class _Session:
+    def __init__(self, env: IncidentResponseEnvironment) -> None:
+        self.env = env
+        self.last_used = time.time()
+
+    def touch(self) -> None:
+        self.last_used = time.time()
+
+    def expired(self) -> bool:
+        return (time.time() - self.last_used) > _SESSION_TIMEOUT_S
+
+_SESSIONS: Dict[str, _Session] = {}
+_SESSIONS_LOCK = asyncio.Lock()
+
+
+async def _reap_sessions() -> None:
+    """Background task: remove sessions idle for > SESSION_TIMEOUT_S."""
+    while True:
+        await asyncio.sleep(60)
+        async with _SESSIONS_LOCK:
+            expired = [sid for sid, s in _SESSIONS.items() if s.expired()]
+            for sid in expired:
+                _SESSIONS.pop(sid, None)
+
 app.title       = "CloudOps Intelligence Environment"
-app.version     = "0.2.0"
+app.version     = "0.3.0"
 app.description = (
     "Multi-step cloud operations environment combining AIOps, FinOps, and Security. "
     "Easy: FinOps cost anomaly (zombie EC2 fleet, $12k billing spike). "
@@ -62,6 +98,7 @@ app.description = (
 async def _lifespan(application: FastAPI):
     global _SERVER_START_TIME
     _SERVER_START_TIME = time.time()
+    reaper = asyncio.create_task(_reap_sessions())
     print("=" * 60)
     print("CloudOps Intelligence Environment — server ready")
     print(f"  Endpoints: /reset /step /state /ws /health /tasks /grade")
@@ -70,16 +107,124 @@ async def _lifespan(application: FastAPI):
     print(f"  PID: {os.getpid()}")
     print("=" * 60)
     yield
+    reaper.cancel()
     print(f"Server shutting down (uptime {time.time() - _SERVER_START_TIME:.1f}s)")
 
 
 app.router.lifespan_context = _lifespan
 
-# Remove framework stubs so our richer implementations take precedence
+# Remove framework stubs — our richer implementations take precedence.
+# Also remove /reset, /step, /state so our session-aware versions win.
+_OVERRIDE_PATHS = {"/health", "/metadata", "/schema", "/reset", "/step", "/state"}
 app.routes[:] = [
     r for r in app.routes
-    if getattr(r, "path", None) not in ("/health", "/metadata", "/schema")
+    if getattr(r, "path", None) not in _OVERRIDE_PATHS
 ]
+
+
+def _obs_to_dict(obs: IncidentObservation) -> dict:
+    """Serialise an observation to a plain dict suitable for JSONResponse."""
+    d = obs.model_dump()
+    # Convert ServiceHealth objects if they weren't already serialised
+    if d.get("services") and hasattr(d["services"][0], "model_dump"):
+        d["services"] = [s.model_dump() for s in d["services"]]
+    return d
+
+
+# ---------------------------------------------------------------------------
+# Stateful /reset — creates a session, returns session_id + observation
+# ---------------------------------------------------------------------------
+class _ResetBody(BaseModel):
+    task: str = "easy"
+    seed: int = 42
+
+@app.post("/reset", summary="Start a new episode", tags=["Environment"])
+async def reset_endpoint(body: _ResetBody = Body(default_factory=_ResetBody)) -> JSONResponse:
+    env = IncidentResponseEnvironment()
+    loop = asyncio.get_event_loop()
+    obs = await loop.run_in_executor(None, lambda: env.reset(task=body.task, seed=body.seed))
+
+    session_id = str(uuid.uuid4())
+    async with _SESSIONS_LOCK:
+        _SESSIONS[session_id] = _Session(env)
+
+    obs_dict = _obs_to_dict(obs)
+    return JSONResponse(content={
+        "session_id":  session_id,
+        "observation": obs_dict,
+        "reward":      obs_dict.get("reward", 0.0),
+        "done":        obs_dict.get("done", False),
+    }, status_code=200)
+
+
+# ---------------------------------------------------------------------------
+# Stateful /step — looks up session, advances one step
+# ---------------------------------------------------------------------------
+class _StepBody(BaseModel):
+    action:     dict = {}
+    session_id: str  = ""
+
+@app.post("/step", summary="Take one action", tags=["Environment"])
+async def step_endpoint(body: _StepBody = Body(default_factory=_StepBody)) -> JSONResponse:
+    session: Optional[_Session] = None
+    async with _SESSIONS_LOCK:
+        session = _SESSIONS.get(body.session_id)
+        if session is not None:
+            session.touch()
+
+    if session is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Session '{body.session_id}' not found or expired. "
+                "Call POST /reset first to obtain a session_id."
+            ),
+        )
+
+    try:
+        action = IncidentAction(**body.action)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid action: {exc}")
+
+    loop = asyncio.get_event_loop()
+    obs = await loop.run_in_executor(None, lambda: session.env.step(action))
+
+    obs_dict = _obs_to_dict(obs)
+    return JSONResponse(content={
+        "session_id":  body.session_id,
+        "observation": obs_dict,
+        "reward":      obs_dict.get("reward", 0.0),
+        "done":        obs_dict.get("done", False),
+    }, status_code=200)
+
+
+# ---------------------------------------------------------------------------
+# Stateful /state — returns current IncidentState for a session
+# ---------------------------------------------------------------------------
+@app.get("/state", summary="Get current episode state", tags=["Environment"])
+async def state_endpoint(session_id: str = "") -> JSONResponse:
+    async with _SESSIONS_LOCK:
+        session = _SESSIONS.get(session_id)
+        if session is not None:
+            session.touch()
+
+    if session is None:
+        return JSONResponse(content={"escalated": False, "session_id": session_id}, status_code=200)
+
+    env = session.env
+    state = IncidentState(
+        task=env._task,
+        step_count=env._step_count,
+        max_steps=env._max_steps,
+        root_causes_identified=list(env._root_causes_identified),
+        fixes_applied=list(env._fixes_applied),
+        services_fixed=list(env._services_fixed),
+        cumulative_reward=env._cumulative_reward,
+        done=env._done,
+        escalated=env._escalated,
+        episode_id=env._episode_id,
+    )
+    return JSONResponse(content=state.model_dump(), status_code=200)
 
 
 @app.get("/health", summary="Readiness probe", tags=["Operations"])

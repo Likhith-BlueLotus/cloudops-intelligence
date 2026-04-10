@@ -1,0 +1,44 @@
+{
+  "fetched_at": "2026-04-10T21:03:11.818372+00:00",
+  "source": "https://feodotracker.abuse.ch/downloads/ipblocklist.csv",
+  "description": "Real active botnet C2 server IPs \u2014 abuse.ch Feodo Tracker",
+  "license": "CC0 \u2014 https://feodotracker.abuse.ch/",
+  "count": 5,
+  "records": [
+    {
+      "ip": "162.243.103.246",
+      "port": "8080",
+      "malware": "Emotet",
+      "status": "offline",
+      "last_seen": "2026-03-07"
+    },
+    {
+      "ip": "50.16.16.211",
+      "port": "443",
+      "malware": "QakBot",
+      "status": "online",
+      "last_seen": "2026-03-12"
+    },
+    {
+      "ip": "34.204.119.63",
+      "port": "443",
+      "malware": "QakBot",
+      "status": "offline",
+      "last_seen": "2026-03-01"
+    },
+    {
+      "ip": "178.62.3.223",
+      "port": "443",
+      "malware": "QakBot",
+      "status": "offline",
+      "last_seen": "2026-02-18"
+    },
+    {
+      "ip": "27.133.154.218",
+      "port": "443",
+      "malware": "QakBot",
+      "status": "offline",
+      "last_seen": "2026-03-05"
+    }
+  ]
+}

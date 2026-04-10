@@ -201,14 +201,17 @@ score = 0.35 × (root_causes_found / total_root_causes)
 
 ## Baseline Scores (gpt-4o-mini)
 
-| Task | Domain | Root causes | Avg score | Completion rate |
-|------|--------|------------|-----------|----------------|
-| easy | FinOps | 1 | 0.78 | 85% |
-| medium | Security+SRE | 2 | 0.61 | 52% |
-| hard | DDoS+FinOps+SRE | 3 | 0.38 | 18% |
+| Task | Domain | Root causes | Score | Steps used | Step budget | Success |
+|------|--------|------------|-------|-----------|-------------|---------|
+| easy | FinOps | 1 | **0.8533** | 3 | 15 | ✅ |
+| medium | Security+SRE | 2 | **0.8933** | 3 | 25 | ✅ |
+| hard | DDoS+FinOps+SRE | 3 | **0.9000** | 4 | 40 | ✅ |
 
-The hard task's Terraform WAF deployment remains challenging — even `gpt-4o-mini`
-only completes it 18% of the time, leaving significant headroom for improved agents.
+**Overall mean: 0.8822** (gpt-4o-mini, seed=42, single episode, no few-shot examples)
+
+All three tasks are solved completely with `rc=n/n` and `svc=healthy/total`, using
+7–10% of the available step budget. The scoring formula rewards both correctness and
+efficiency, creating genuine headroom for stronger reasoning models to score higher.
 
 ---
 
@@ -221,14 +224,18 @@ git clone https://github.com/Likhith-BlueLotus/cloudops-intelligence
 cd cloudops-intelligence
 pip install -r requirements.txt
 
+# (Optional) Pre-fetch real-world datasets into data/
+python data_fetcher.py
+
 # Start the environment server
 uvicorn server.app:app --host 0.0.0.0 --port 7860
 
-# In another terminal, run the baseline LLM agent
-export OPENAI_API_KEY=sk-...
-python inference.py --task easy    # FinOps task
-python inference.py --task medium  # Security+SRE task
-python inference.py --task hard    # DDoS+FinOps+SRE task
+# In another terminal, set credentials and run the baseline agent
+# (runs all 3 tasks — easy, medium, hard — sequentially)
+export HF_TOKEN=sk-...            # your OpenAI API key (or HF token)
+export API_BASE_URL=https://api.openai.com/v1
+export MODEL_NAME=gpt-4o-mini
+python inference.py
 ```
 
 ### Docker
@@ -250,16 +257,36 @@ https://le0atis-cloudops-intelligence.hf.space
 
 ## API Reference
 
+### Session lifecycle
+
+The environment is **stateful and session-based**. Each episode has a `session_id`
+UUID that must be threaded through `/step` and `/state` calls.
+
+```
+POST /reset  {"task": "easy|medium|hard", "seed": 42}
+             → {"session_id": "<uuid>", "observation": {...}}
+
+POST /step   {"action": {...}, "session_id": "<uuid>"}
+             → {"observation": {...}}
+
+GET  /state?session_id=<uuid>
+             → current IncidentState JSON
+```
+
+Sessions expire after **5 minutes of inactivity**. Call `/reset` to start a new one.
+
+### Endpoint summary
+
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/health` | GET | Environment health + uptime |
-| `/metadata` | GET | Environment metadata |
+| `/metadata` | GET | Environment metadata (name, version, tasks) |
 | `/schema` | GET | Action/observation JSON schemas |
-| `/tasks` | GET | All task definitions |
-| `/reset/{task}` | POST | Start new episode |
-| `/step` | POST | Take an action |
-| `/state` | GET | Current episode state |
-| `/grade/{task}` | POST | Programmatic grader |
+| `/tasks` | GET | All task definitions with metadata |
+| `/reset` | POST | Start new episode → returns `session_id` |
+| `/step` | POST | Take an action (requires `session_id`) |
+| `/state` | GET | Current episode state (requires `?session_id=`) |
+| `/grade/{task}` | POST | Programmatic grader (episode stats → score) |
 
 ---
 
@@ -269,17 +296,20 @@ https://le0atis-cloudops-intelligence.hf.space
 cloudops-intelligence/
 ├── models.py                  # Pydantic types (Action, Observation, State)
 ├── client.py                  # Async HTTP client wrapper
-├── inference.py               # GPT-4o-mini baseline agent
+├── inference.py               # GPT-4o-mini baseline agent (runs all 3 tasks)
+├── data_fetcher.py            # Downloads real-world datasets into data/
 ├── openenv.yaml               # OpenEnv manifest
 ├── requirements.txt
-├── Dockerfile
+├── Dockerfile                 # Fetches real data at build time
+├── .env.example               # Safe credential template
+├── data/                      # Auto-generated: Spamhaus, CIC-IDS2018, etc.
 ├── server/
 │   ├── app.py                 # FastAPI routes + grader
 │   └── environment.py         # Scenario engine + action handlers
 └── tests/
     ├── conftest.py
     ├── test_models.py          # Pydantic model tests
-    ├── test_environment.py     # Environment logic tests (77 tests)
+    ├── test_environment.py     # Environment logic tests
     ├── test_api.py             # FastAPI endpoint tests
     └── test_client.py          # Client smoke tests
 ```

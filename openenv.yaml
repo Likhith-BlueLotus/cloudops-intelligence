@@ -4,7 +4,7 @@ spec_version: 1
 # Environment identity
 # ---------------------------------------------------------------------------
 name:        cloudops-intelligence
-version:     "0.2.0"
+version:     "0.3.0"
 description: >
   CloudOps Intelligence — a multi-step cloud operations environment combining
   FinOps cost optimisation, cloud security remediation, and CloudOps intelligence

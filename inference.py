@@ -324,6 +324,7 @@ def run_episode(task: str) -> dict:
     Run one full episode for the given task.
     Returns a dict with score, steps, and per-step rewards.
     """
+    t_task_start = time.time()
     max_steps = MAX_STEPS_PER_TASK[task]
     messages: List[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
     rewards: List[float] = []
@@ -462,7 +463,7 @@ def run_episode(task: str) -> dict:
         rc_found_final, rc_total_final,
         svc_hlthy_final, svc_total_final,
         done,
-        sum(rewards),  # proxy elapsed
+        time.time() - t_task_start,
     )
 
     return {

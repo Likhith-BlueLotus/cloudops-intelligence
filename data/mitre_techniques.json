@@ -1,0 +1,67 @@
+{
+  "fetched_at": "2026-04-10T21:03:11.818372+00:00",
+  "source": "https://raw.githubusercontent.com/mitre-attack/attack-stix-data/master/enterprise-attack/enterprise-attack-16.1.json",
+  "description": "Real MITRE ATT&CK technique metadata (STIX 2.1 bundle)",
+  "license": "Apache 2.0 \u2014 https://github.com/mitre-attack/attack-stix-data",
+  "techniques": {
+    "T1530": {
+      "id": "T1530",
+      "stix_id": "attack-pattern--3298ce88-1628-43b1-87d9-0b5336b193d7",
+      "name": "Data from Cloud Storage",
+      "description": "Adversaries may access data from cloud storage.\n\nMany IaaS providers offer solutions for online data object storage such as Amazon S3, Azure Storage, and Google Cloud Storage. Similarly, SaaS enterprise platforms such as Office 365 and Google Workspace provide cloud-based document storage to users through services such as OneDrive and Google Drive, while SaaS application providers such as Slack, Confluence, Salesforce, and Dropbox may provide cloud storage solutions as a peripheral or primary use case of their platform. \n\nIn some cases, as with IaaS-based cloud storage, there exists no overarc",
+      "platforms": [
+        "IaaS",
+        "SaaS",
+        "Office Suite"
+      ],
+      "tactics": [
+        "collection"
+      ],
+      "url": "https://attack.mitre.org/techniques/T1530",
+      "modified": "2024-10-14T22:11:30.271Z"
+    },
+    "T1078": {
+      "id": "T1078",
+      "stix_id": "attack-pattern--b17a1a56-e99c-403c-8948-561df0cffe81",
+      "name": "Valid Accounts",
+      "description": "Adversaries may obtain and abuse credentials of existing accounts as a means of gaining Initial Access, Persistence, Privilege Escalation, or Defense Evasion. Compromised credentials may be used to bypass access controls placed on various resources on systems within the network and may even be used for persistent access to remote systems and externally available services, such as VPNs, Outlook Web Access, network devices, and remote desktop.(Citation: volexity_0day_sophos_FW) Compromised credentials may also grant an adversary increased privilege to specific systems or access to restricted are",
+      "platforms": [
+        "Windows",
+        "SaaS",
+        "IaaS",
+        "Linux",
+        "macOS",
+        "Containers",
+        "Network",
+        "Office Suite",
+        "Identity Provider"
+      ],
+      "tactics": [
+        "defense-evasion",
+        "persistence",
+        "privilege-escalation",
+        "initial-access"
+      ],
+      "url": "https://attack.mitre.org/techniques/T1078",
+      "modified": "2024-10-15T16:09:46.024Z"
+    },
+    "T1498": {
+      "id": "T1498",
+      "stix_id": "attack-pattern--d74c4a7e-ffbf-432f-9365-7ebf1f787cab",
+      "name": "Network Denial of Service",
+      "description": "Adversaries may perform Network Denial of Service (DoS) attacks to degrade or block the availability of targeted resources to users. Network DoS can be performed by exhausting the network bandwidth services rely on. Example resources include specific websites, email services, DNS, and web-based applications. Adversaries have been observed conducting network DoS attacks for political purposes(Citation: FireEye OpPoisonedHandover February 2016) and to support other malicious activities, including distraction(Citation: FSISAC FraudNetDoS September 2012), hacktivism, and extortion.(Citation: Syman",
+      "platforms": [
+        "Windows",
+        "IaaS",
+        "Linux",
+        "macOS",
+        "Containers"
+      ],
+      "tactics": [
+        "impact"
+      ],
+      "url": "https://attack.mitre.org/techniques/T1498",
+      "modified": "2024-10-15T16:01:00.510Z"
+    }
+  }
+}

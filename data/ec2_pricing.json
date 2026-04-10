@@ -1,0 +1,12 @@
+{
+  "fetched_at": "2026-04-10T21:03:11.818372+00:00",
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/current/us-east-1/index.csv",
+  "description": "Real AWS EC2 On-Demand Linux pricing for us-east-1",
+  "license": "Public \u2014 https://aws.amazon.com/ec2/pricing/",
+  "region": "us-east-1",
+  "prices_usd_per_hour": {
+    "m5.xlarge": 0.192,
+    "g4dn.xlarge": 0.526,
+    "t3.medium": 0.0416
+  }
+}

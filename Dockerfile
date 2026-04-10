@@ -33,6 +33,13 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 COPY --chown=appuser:appuser . .
 
+# Pre-fetch real-world datasets (Spamhaus DROP, CIC-IDS2018, AWS Pricing,
+# MITRE ATT&CK) and bake them into the image so the environment uses
+# authentic data without needing external network access at runtime.
+# Runs as appuser with /app as cwd; output goes to data/ directory.
+# Failures are non-fatal — environment falls back to hardcoded baselines.
+RUN python data_fetcher.py || echo "[WARN] data_fetcher.py failed — using fallback data"
+
 EXPOSE 7860
 
 USER appuser

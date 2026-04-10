@@ -1,0 +1,29 @@
+{
+  "fetched_at": "2026-04-10T21:03:11.818372+00:00",
+  "sources": {
+    "spamhaus_drop": {
+      "count": 1591,
+      "ok": true
+    },
+    "feodo_c2": {
+      "count": 5,
+      "ok": true
+    },
+    "ec2_pricing": {
+      "prices": {
+        "m5.xlarge": 0.192,
+        "g4dn.xlarge": 0.526,
+        "t3.medium": 0.0416
+      },
+      "ok": true
+    },
+    "cic_ids2018": {
+      "count": 100,
+      "ok": true
+    },
+    "mitre": {
+      "count": 3,
+      "ok": true
+    }
+  }
+}
