@@ -826,6 +826,10 @@ class IncidentResponseEnvironment(Environment):
         )
 
     def step(self, action: IncidentAction) -> IncidentObservation:  # type: ignore[override]
+        if not self._scenario:
+            # No active session — auto-reset to 'easy' so stateless HTTP callers get
+            # a coherent response. Multi-step evaluation should use WebSocket (/ws).
+            self.reset(task="easy")
         if self._done:
             return self._make_observation(
                 action_output="Episode complete. Call reset() to start a new episode.",
@@ -1208,7 +1212,11 @@ class IncidentResponseEnvironment(Environment):
         )
 
     def _all_resolved(self) -> bool:
-        root_causes = set(self._scenario["root_causes"])
+        if not self._scenario:
+            return False
+        root_causes = set(self._scenario.get("root_causes", []))
+        if not root_causes:
+            return False
         if not root_causes.issubset(set(self._fixes_applied)):
             return False
         return all(
