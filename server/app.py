@@ -83,7 +83,7 @@ async def _reap_sessions() -> None:
                 _SESSIONS.pop(sid, None)
 
 app.title       = "CloudOps Intelligence Environment"
-app.version     = "0.3.0"
+app.version     = "0.4.0"
 app.description = (
     "Multi-step cloud operations environment combining AIOps, FinOps, and Security. "
     "Easy: FinOps cost anomaly (zombie EC2 fleet, $12k billing spike). "
@@ -236,7 +236,7 @@ async def health() -> JSONResponse:
         "environment": {
             "name":                    "cloudops-intelligence",
             "version":                 app.version,
-            "tasks":                   ["easy", "medium", "hard"],
+            "tasks":                   ["easy", "medium", "hard", "soc_easy", "soc_medium", "soc_hard"],
             "max_concurrent_sessions": _concurrency.max_concurrent_envs,
         },
         "websocket_endpoint": "/ws",
@@ -249,19 +249,20 @@ async def get_metadata() -> JSONResponse:
     return JSONResponse(content={
         "name": "CloudOps Intelligence Environment",
         "description": (
-            "A multi-step on-call engineering environment where an AI agent acts as a "
-            "senior on-call engineer responding to production incidents. The agent reads "
-            "service logs and metrics, identifies root causes, applies targeted fixes, "
-            "and verifies recovery — exactly the workflow performed by SRE and DevOps "
-            "teams at every technology company. Three difficulty tiers model real incident "
-            "classes: connection pool exhaustion (easy), cache stampede + missing DB index "
-            "(medium), and a multi-service cascade with memory leak, message queue disk "
-            "saturation, and database deadlock (hard)."
+            "A multi-step cloud operations environment where an AI agent acts as a "
+            "senior on-call engineer and SOC analyst. The CloudOps track covers FinOps "
+            "cost optimisation (zombie EC2 cleanup), cloud security remediation (S3 ACL "
+            "misconfiguration, IAM typos), and live DDoS response requiring Terraform WAF "
+            "deployment. The SOC Analyst track covers alert triage (brute-force SSH), "
+            "malware containment (QakBot C2 + credential dump), and multi-stage APT "
+            "response (C2 + lateral movement + S3 data exfiltration). Six tasks across "
+            "both domains model real workflows at every SRE and SecOps team."
         ),
         "version":           app.version,
-        "tasks":             ["easy", "medium", "hard"],
+        "tasks":             ["easy", "medium", "hard", "soc_easy", "soc_medium", "soc_hard"],
         "reward_range":      [0.0, 1.0],
-        "tags":              ["cloudops", "finops", "cloud-security", "sre", "devops", "openenv"],
+        "tags":              ["cloudops", "finops", "cloud-security", "sre", "devops",
+                              "secops", "soc", "threat-intel", "openenv"],
     }, status_code=200)
 
 
@@ -342,6 +343,61 @@ _TASK_METADATA: Dict[str, dict] = {
         "max_steps":   40,
         "root_causes": 3,
         "services":    6,
+        "score_range": [0.0, 1.0],
+        "grader":      "programmatic",
+    },
+    "soc_easy": {
+        "id":          "soc_easy",
+        "title":       SCENARIOS["soc_easy"]["title"],
+        "domain":      SCENARIOS["soc_easy"]["domain"],
+        "description": (
+            "SOC Analyst (easy): SIEM alert SOC-2847 — 247 failed SSH logins from Tor exit node "
+            "185.220.101.45, 1 successful login as svc_deploy. Agent must: lookup_threat_intel "
+            "to confirm malicious IP, view bastion_host logs to find the active session, "
+            "apply_fix(revoke_session) to terminate the attacker session, and verify recovery. "
+            "2 services, 1 root cause, 15 step budget."
+        ),
+        "difficulty":  "soc_easy",
+        "max_steps":   15,
+        "root_causes": 1,
+        "services":    2,
+        "score_range": [0.0, 1.0],
+        "grader":      "programmatic",
+    },
+    "soc_medium": {
+        "id":          "soc_medium",
+        "title":       SCENARIOS["soc_medium"]["title"],
+        "domain":      SCENARIOS["soc_medium"]["domain"],
+        "description": (
+            "SOC Analyst (medium): SIEM alert SOC-3991 — correlated: QakBot C2 beacon from "
+            "ENG-WORKSTATION-47 to 162.243.103.246:8080 (Feodo Tracker), LSASS credential dump "
+            "(8 accounts at risk), lateral movement probe on 10.0.2.0/24. "
+            "Agent must: look up the C2 IP on Feodo, isolate the infected host, "
+            "and rotate all compromised credentials. 4 services, 2 root causes, 25 step budget."
+        ),
+        "difficulty":  "soc_medium",
+        "max_steps":   25,
+        "root_causes": 2,
+        "services":    4,
+        "score_range": [0.0, 1.0],
+        "grader":      "programmatic",
+    },
+    "soc_hard": {
+        "id":          "soc_hard",
+        "title":       SCENARIOS["soc_hard"]["title"],
+        "domain":      SCENARIOS["soc_hard"]["domain"],
+        "description": (
+            "SOC Analyst (hard): SIEM alert SOC-4128 — APT multi-stage: active QakBot C2 to "
+            "50.16.16.211:443 (ONLINE, Feodo Tracker), lateral movement to 3 internal servers "
+            "via WMI/SMB, and 2.3 GB S3 data exfiltration via stolen DataScienceRole credentials "
+            "(confirmed GuardDuty findings). Agent must: block C2 IP via Terraform aws_network_acl, "
+            "isolate all 4 compromised hosts, and revoke the stolen IAM session. "
+            "5 services, 3 root causes, 40 step budget."
+        ),
+        "difficulty":  "soc_hard",
+        "max_steps":   40,
+        "root_causes": 3,
+        "services":    5,
         "score_range": [0.0, 1.0],
         "grader":      "programmatic",
     },

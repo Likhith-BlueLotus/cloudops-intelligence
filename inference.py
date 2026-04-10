@@ -2,7 +2,7 @@
 CloudOps Intelligence Environment — Inference Script
 =======================================================
 
-Runs one full episode per task (easy / medium / hard) against a live
+Runs one full episode per task (easy / medium / hard / soc_easy / soc_medium / soc_hard) against a live
 CloudOps Intelligence server and reports per-task programmatic scores.
 
 Required environment variables (hackathon spec):
@@ -22,7 +22,8 @@ Stdout format (strictly follows the hackathon-required [START]/[STEP]/[END] spec
   [END]   success=<true|false> steps=<n> score=<float> rewards=<r1,r2,...>
 
 JSON_SCORES emitted at the end:
-  JSON_SCORES: {"easy": <float>, "medium": <float>, "hard": <float>}
+  JSON_SCORES: {"easy": <float>, "medium": <float>, "hard": <float>,
+               "soc_easy": <float>, "soc_medium": <float>, "soc_hard": <float>}
 """
 
 import json
@@ -75,19 +76,26 @@ def _get_client() -> OpenAI:
 # ---------------------------------------------------------------------------
 # Task configuration
 # ---------------------------------------------------------------------------
-MAX_STEPS_PER_TASK = {"easy": 15, "medium": 25, "hard": 40}
+MAX_STEPS_PER_TASK = {
+    "easy":       15,
+    "medium":     25,
+    "hard":       40,
+    "soc_easy":   15,
+    "soc_medium": 25,
+    "soc_hard":   40,
+}
 TEMPERATURE        = 0.1  # low temperature for deterministic investigation
 
 # ---------------------------------------------------------------------------
 # System prompt — defines the agent's role and output format
 # ---------------------------------------------------------------------------
-SYSTEM_PROMPT = """You are a senior Cloud Operations Engineer (CloudOps / SRE) at a large technology company.
-You are responding to cloud operations incidents that may involve cost anomalies (FinOps),
-security vulnerabilities, or live service outages. Your job is to:
-1. Investigate the incident using logs, metrics, billing data, and cloud CLI output
-2. Identify the root cause(s) — may be a cost issue, security misconfiguration, or service failure
-3. Apply targeted fixes (or write Terraform for infrastructure changes like WAF rules)
-4. Verify that all services/resources return to healthy status
+SYSTEM_PROMPT = """You are a senior Cloud Operations Engineer and SOC Analyst at a large technology company.
+You respond to cloud operations incidents (FinOps, SRE, DDoS) and security operations alerts
+(brute-force, malware C2, credential theft, data exfiltration). Your job is to:
+1. Investigate the incident using logs, metrics, billing data, SIEM alerts, and threat intelligence
+2. Identify root cause(s) — cost issue, security misconfiguration, service failure, or active threat
+3. Apply targeted fixes (revoke sessions, isolate hosts, rotate credentials, deploy Terraform)
+4. Verify that all services and security controls return to a healthy/secure state
 
 You must respond with a single JSON action object. Do not output any other text.
 
@@ -101,32 +109,38 @@ Available action types:
 - list_resources: List cloud resources of a given type
   {"action_type": "list_resources", "parameters": {"type": "ec2|s3|iam|waf"}}
 
-- run_cli: Execute an AWS CLI command (simulated)
+- run_cli: Execute an AWS CLI or system command (simulated)
   {"action_type": "run_cli", "parameters": {"command": "aws ec2 describe-instances ..."}}
 
 - view_billing: View cost and usage reports
   {"action_type": "view_billing", "target": "ec2|overall", "parameters": {"period": "month|realtime"}}
 
-- apply_fix: Apply a targeted remediation
+- lookup_threat_intel: Query threat intelligence feeds (Feodo Tracker, Spamhaus DROP) for an IOC
+  {"action_type": "lookup_threat_intel", "parameters": {"ioc": "<ip_address>", "ioc_type": "ip"}}
+  Use this FIRST when you see a suspicious IP in a SOC alert to confirm if it is a known C2/botnet.
+
+- apply_fix: Apply a targeted remediation to a resource
   {"action_type": "apply_fix", "target": "<resource_name>", "parameters": {"fix_type": "<type>", "config_key": "<key>", "config_value": "<value>"}}
-  fix_type options: terminate, update_policy, block_public_access, fix_iam, adjust_config, enable_rate_limiting, rollback
+  CloudOps fix_types: terminate, block_public_access, fix_iam, adjust_config, enable_rate_limiting
+  SOC fix_types: revoke_session, block_ip, isolate_host, quarantine, revoke_credentials, revoke_access
 
-- write_terraform: Write and deploy Terraform configuration (for WAF, firewall rules, etc.)
-  {"action_type": "write_terraform", "parameters": {"resource_type": "aws_wafv2_web_acl", "config": "<terraform_config_describing_what_to_create>"}}
+- write_terraform: Write and deploy Terraform configuration (WAF rules, network ACLs, firewall rules)
+  {"action_type": "write_terraform", "parameters": {"resource_type": "aws_wafv2_web_acl|aws_network_acl", "config": "<config>"}}
 
-- verify: Confirm a service/resource is healthy or secure after a fix
+- verify: Confirm a service/resource is healthy or secured after a fix
   {"action_type": "verify", "target": "<service_name>"}
 
 - escalate: Escalate to senior engineer (use as last resort)
   {"action_type": "escalate"}
 
 Investigation strategy by domain:
-FINOPS: Check view_billing first → then list_resources to find idle/zombie resources → terminate waste
-SECURITY: Check run_cli for bucket ACL / IAM policies → apply policy fix → verify
-SRE/SERVICE: view_logs for errors → view_metrics for saturation → apply_fix → verify
-DDOS: view_logs(api_gateway) → run_cli(vpc get-flow-logs) → write_terraform(WAF) → verify
+FINOPS:   view_billing → list_resources(ec2) → apply_fix(terminate) → verify
+SECURITY: run_cli(aws s3api/iam) → apply_fix → verify
+SRE:      view_logs → view_metrics → apply_fix → verify
+DDOS:     view_logs(api_gateway) → run_cli(vpc flow-logs) → write_terraform(wafv2) → verify
+SOC:      view_logs(siem_service) → lookup_threat_intel(suspicious_ip) → apply_fix(isolate/revoke) → verify
 
-Respond with ONLY a valid JSON object like: {"action_type": "view_billing", "target": "ec2", "parameters": {"period": "month"}}"""
+Respond with ONLY a valid JSON object like: {"action_type": "lookup_threat_intel", "parameters": {"ioc": "1.2.3.4", "ioc_type": "ip"}}"""
 
 # ---------------------------------------------------------------------------
 # HTTP helpers (direct HTTP to avoid asyncio complexity)
@@ -501,7 +515,7 @@ def main() -> None:
     scores: Dict[str, float] = {}
     t_start = time.time()
 
-    for task in ("easy", "medium", "hard"):
+    for task in ("easy", "medium", "hard", "soc_easy", "soc_medium", "soc_hard"):
         log.info("=" * 60)
         result = run_episode(task)
         scores[task] = result["score"]

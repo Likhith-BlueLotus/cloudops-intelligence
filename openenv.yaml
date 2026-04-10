@@ -4,21 +4,23 @@ spec_version: 1
 # Environment identity
 # ---------------------------------------------------------------------------
 name:        cloudops-intelligence
-version:     "0.3.0"
+version:     "0.4.0"
 description: >
-  CloudOps Intelligence — a multi-step cloud operations environment combining
-  FinOps cost optimisation, cloud security remediation, and CloudOps intelligence
-  response into three progressively harder real-world tasks.
+  CloudOps Intelligence — a dual-track multi-step cloud operations environment
+  combining FinOps cost optimisation, cloud security remediation, and SOC analyst
+  workflows into six progressively harder real-world tasks.
 
-  Every task simulates a scenario that Cloud/SRE teams encounter daily:
-  zombie resource cleanup, IAM misconfiguration causing service outages,
-  S3 public exposure, and coordinated DDoS attack response requiring live
-  Terraform WAF deployment.
+  CloudOps track: zombie EC2 cleanup (FinOps), S3/IAM misconfiguration response
+  (Security + SRE), and live DDoS response with Terraform WAF deployment
+  (DDoS + FinOps + SRE).
 
-  The agent acts as a senior Cloud Operations Engineer using AWS CLI commands,
-  billing reports, VPC flow logs, IAM policy inspection, and Terraform to
-  investigate and remediate incidents — no game mechanics, no physics engine,
-  no spatial grids. Purely text-based cognitive work.
+  SOC Analyst track: brute-force SSH account compromise triage, QakBot C2 beacon
+  + LSASS credential dump containment, and multi-stage APT response (active C2 +
+  lateral movement + S3 data exfiltration via stolen IAM credentials).
+
+  The agent uses real threat intelligence (abuse.ch Feodo Tracker, Spamhaus DROP,
+  MITRE ATT&CK), AWS CLI outputs, VPC flow logs, SIEM alerts, and Terraform to
+  investigate and remediate — no game mechanics, purely text-based cognitive work.
 
 # ---------------------------------------------------------------------------
 # Runtime
@@ -93,6 +95,53 @@ tasks:
       Agent must also analyse VPC flow logs (run_cli) to identify attack sources.
       6 services | 3 root causes | 40 step budget.
     difficulty:  hard
+    max_steps:   40
+    grader:      programmatic
+    score_range: [0.0, 1.0]
+    grader_formula: >
+      score = 0.35 × rc_ratio + 0.25 × svc_ratio + 0.20 × reward_norm + 0.20 × bonus
+
+  - id:          soc_easy
+    description: >
+      SOC Analyst (easy) — SIEM alert SOC-2847: 247 failed SSH logins from Tor exit node
+      185.220.101.45 (Spamhaus DROP listed), 1 successful login as svc_deploy. The attacker
+      runs sudo commands and attempts to download an implant. Agent must: lookup_threat_intel
+      to confirm the IOC, view bastion_host logs to identify the active attacker session,
+      apply_fix(revoke_session) to terminate it, and verify recovery.
+      2 services | 1 root cause | 15 step budget.
+    difficulty:  soc_easy
+    max_steps:   15
+    grader:      programmatic
+    score_range: [0.0, 1.0]
+    grader_formula: >
+      score = 0.35 × rc_ratio + 0.25 × svc_ratio + 0.20 × reward_norm + 0.20 × bonus
+
+  - id:          soc_medium
+    description: >
+      SOC Analyst (medium) — SIEM alert SOC-3991: three simultaneous rules fired — QakBot
+      C2 beacon from ENG-WORKSTATION-47 to 162.243.103.246:8080 (abuse.ch Feodo Tracker,
+      QakBot family), LSASS memory access (MITRE T1003.001) exposing NTLM hashes for 8
+      accounts, and lateral movement probe via SMB to 10.0.2.0/24. Agent must: look up the
+      C2 IP on threat intel, isolate the infected host (endpoint_security), and rotate
+      all compromised AD credentials (auth_service).
+      4 services | 2 root causes | 25 step budget.
+    difficulty:  soc_medium
+    max_steps:   25
+    grader:      programmatic
+    score_range: [0.0, 1.0]
+    grader_formula: >
+      score = 0.35 × rc_ratio + 0.25 × svc_ratio + 0.20 × reward_norm + 0.20 × bonus
+
+  - id:          soc_hard
+    description: >
+      SOC Analyst (hard) — SIEM alert SOC-4128: APT multi-stage — active QakBot C2 to
+      50.16.16.211:443 (ONLINE per Feodo Tracker), lateral WMI/SMB movement to 3 internal
+      servers (MITRE T1021), and 2.3 GB S3 exfiltration via stolen DataScienceRole credentials
+      (MITRE T1530, T1078). GuardDuty confirms UnauthorizedAccess:IAMUser/TorIPCaller. Agent
+      must: verify Feodo intel, block C2 via Terraform aws_network_acl, isolate all 4 infected
+      hosts, and revoke the stolen IAM role session.
+      5 services | 3 root causes | 40 step budget.
+    difficulty:  soc_hard
     max_steps:   40
     grader:      programmatic
     score_range: [0.0, 1.0]

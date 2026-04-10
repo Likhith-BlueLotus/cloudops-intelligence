@@ -6,7 +6,7 @@ colorTo: indigo
 sdk: docker
 app_port: 7860
 license: bsd-3-clause
-short_description: FinOps + Security + DDoS cloud ops for LLM agents
+short_description: FinOps + Security + DDoS + SOC Analyst cloud ops for LLM agents
 tags:
   - reinforcement-learning
   - openenv
@@ -15,40 +15,49 @@ tags:
   - cloud-security
   - sre
   - devops
+  - secops
+  - soc-analyst
   - incident-response
   - terraform
+  - threat-intel
   - aws
 ---
 
 # CloudOps Intelligence Environment
 
-> **Multi-domain cloud operations environment for LLM agents** — combining
-> FinOps cost optimisation, cloud security remediation, and live incident
-> response into three progressively harder real-world scenarios.
+> **Dual-track cloud operations environment for LLM agents** — CloudOps track:
+> FinOps cost optimisation, cloud security remediation, and live DDoS response.
+> SOC Analyst track: alert triage, malware containment, and APT multi-stage response.
+> Six tasks, real threat intelligence (Feodo Tracker, Spamhaus DROP, MITRE ATT&CK).
 
 [![OpenEnv Spec Compliant](https://img.shields.io/badge/OpenEnv-≥0.2.2-blue)](https://github.com/openenv/openenv)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-green.svg)](https://python.org)
-[![Tests](https://img.shields.io/badge/tests-103%20passing-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-40%20passing-brightgreen)](#testing)
 
 ---
 
 ## Why This Environment?
 
-Every Cloud/SRE team deals with three recurring challenge types **every day**:
+Real-world cloud operations teams deal with two distinct problem classes **every day**:
 
-| Challenge | Real impact | This environment |
-|-----------|-------------|------------------|
-| **FinOps waste** | $28B/year in idle cloud resources (Flexera 2024) | Zombie EC2 fleet burning $12k/month |
-| **Cloud security** | 82% of breaches involve cloud misconfiguration (IBM X-Force) | S3 public exposure + IAM typo |
-| **Live incidents** | Average DDoS costs $50k/hour in mitigation + lost revenue | DDoS + auto-scaling runaway at $51k/hr |
+| Domain | Challenge | Real impact | This environment |
+|--------|-----------|-------------|------------------|
+| **CloudOps / FinOps** | Idle cloud resources | $28B/year waste (Flexera 2024) | Zombie EC2 fleet burning $12k/month |
+| **CloudOps / Security** | Cloud misconfiguration | 82% of breaches (IBM X-Force) | S3 public exposure + IAM typo |
+| **CloudOps / DDoS** | Live attack + runaway cost | $50k/hr average DDoS impact | DDoS + auto-scaling at $51k/hr |
+| **SOC / Alert triage** | Account compromise | 80% of attacks use stolen credentials | Brute-force SSH → active session |
+| **SOC / Malware** | C2 beacon + credential dump | QakBot pre-cursor to ransomware | Feodo C2 + LSASS dump (8 accounts) |
+| **SOC / APT** | Multi-stage threat | Avg. 207 days to detect (IBM) | C2 + lateral movement + 2.3 GB exfil |
 
 Existing benchmarks (SWE-bench, WebArena, OSWorld) test coding or web navigation.
-**No existing benchmark tests a cloud operations agent** that must reason across
-billing data, IAM policies, VPC flow logs, and Terraform simultaneously.
+**No existing benchmark tests a cloud operations + SOC agent** that must reason across
+billing data, IAM policies, VPC flow logs, SIEM alerts, and threat intelligence simultaneously.
 
 ---
 
 ## Tasks
+
+### CloudOps Track
 
 ### Easy — FinOps: Zombie EC2 Cost Anomaly
 
@@ -139,21 +148,96 @@ verify(api_gateway)                → Confirm attack mitigated
 
 ---
 
+### SOC Analyst Track
+
+### SOC Easy — Brute-Force SSH → Account Compromise
+
+**Scenario**: SIEM alert SOC-2847 — 247 failed SSH logins from Tor exit node
+`185.220.101.45` (Spamhaus DROP listed), 1 **successful** login as `svc_deploy`.
+The attacker is running `sudo` commands and attempting to download an implant.
+
+**Investigation path**:
+```
+lookup_threat_intel(185.220.101.45)   → Confirm: Tor exit node, abuse score 97/100
+view_logs(bastion_host)               → Find active session + attacker commands
+apply_fix(bastion_host,               → Revoke attacker session immediately
+  revoke_session, session_token)
+verify(bastion_host)                  → Confirm clean
+```
+
+**Root cause**: `compromised_bastion_access` | **Services**: 2 | **Budget**: 15 steps
+
+---
+
+### SOC Medium — QakBot C2 + LSASS Credential Dump
+
+**Scenario**: SIEM alert SOC-3991 — three correlated rules:
+1. QakBot C2 beacon from `ENG-WORKSTATION-47` to `162.243.103.246:8080` (Feodo Tracker, ONLINE)
+2. LSASS memory access — 8 account NTLM hashes dumped (MITRE T1003.001)
+3. SMB lateral movement probe across `10.0.2.0/24`
+
+**Investigation path**:
+```
+lookup_threat_intel(162.243.103.246)  → Confirm: QakBot C2, Feodo Tracker
+view_logs(endpoint_security)          → Find infected host + C2 connection
+apply_fix(endpoint_security,          → Isolate ENG-WORKSTATION-47
+  isolate_host, ENG-WORKSTATION-47)
+apply_fix(auth_service,               → Rotate all 8 compromised credentials
+  revoke_credentials, compromised_accounts)
+verify(endpoint_security)             → Confirm C2 severed
+```
+
+**Root causes**: `malware_c2_beacon`, `credential_dump` | **Services**: 4 | **Budget**: 25 steps
+
+---
+
+### SOC Hard — APT: C2 + Lateral Movement + S3 Data Exfiltration
+
+**Scenario**: SIEM alert SOC-4128 — five correlated GuardDuty/IDS findings:
+1. Active QakBot C2 to `50.16.16.211:443` (ONLINE, Feodo Tracker, 6h+ beacon)
+2. WMI/SMB lateral movement to `PROD-SRV-07`, `PROD-SRV-09`, `DB-PRIMARY` (MITRE T1021)
+3. `DataScienceRole` credential theft + 1,847 S3 GetObject calls = 2.3 GB exfiltrated (MITRE T1530)
+4. API calls originating from C2 IP (MITRE T1078 — Valid Accounts)
+5. GuardDuty finding: `UnauthorizedAccess:IAMUser/TorIPCaller`
+
+**Investigation path**:
+```
+lookup_threat_intel(50.16.16.211)     → Confirm: QakBot C2, ONLINE, Feodo
+run_cli(aws guardduty list-findings)  → See all GuardDuty alerts
+write_terraform(aws_network_acl,      → Block C2 IP at NACL — sever beacon
+  cidr=50.16.16.211/32, rule=DENY)
+apply_fix(endpoint_security,          → Isolate all 4 compromised hosts
+  isolate_host, infected_hosts)
+apply_fix(s3_data_lake,               → Revoke stolen IAM session immediately
+  revoke_access, compromised_iam_role)
+verify(network_ids)                   → Confirm C2 traffic gone
+```
+
+**Root causes**: `active_c2_beacon`, `lateral_movement`, `s3_data_exfiltration`
+**Services**: 5 | **Budget**: 40 steps
+
+---
+
 ## Action Space
 
 All actions are text-based JSON objects — no spatial grids, no physics.
 
 | Action | Description | Example |
 |--------|-------------|---------|
-| `view_logs` | Service log output | `{"action_type": "view_logs", "target": "payment_service"}` |
+| `view_logs` | Service log output | `{"action_type": "view_logs", "target": "bastion_host"}` |
 | `view_metrics` | Time-series data | `{"action_type": "view_metrics", "target": "api_gateway", "parameters": {"metric": "request_rate"}}` |
 | `list_resources` | AWS resource inventory | `{"action_type": "list_resources", "parameters": {"type": "ec2"}}` |
-| `run_cli` | AWS CLI simulation | `{"action_type": "run_cli", "parameters": {"command": "aws s3api get-bucket-acl --bucket prod-customer-data"}}` |
+| `run_cli` | AWS CLI / system command | `{"action_type": "run_cli", "parameters": {"command": "aws guardduty list-findings"}}` |
 | `view_billing` | Cost and usage reports | `{"action_type": "view_billing", "target": "ec2", "parameters": {"period": "month"}}` |
-| `apply_fix` | Apply remediation | `{"action_type": "apply_fix", "target": "auto_scaling", "parameters": {"fix_type": "adjust_config", "config_key": "max_capacity", "config_value": "20"}}` |
-| `write_terraform` | Generate + validate Terraform | `{"action_type": "write_terraform", "parameters": {"resource_type": "aws_wafv2_web_acl", "config": "..."}}` |
-| `verify` | Health / security check | `{"action_type": "verify", "target": "api_gateway"}` |
+| `lookup_threat_intel` | Query Feodo/Spamhaus/AbuseIPDB feeds | `{"action_type": "lookup_threat_intel", "parameters": {"ioc": "50.16.16.211", "ioc_type": "ip"}}` |
+| `apply_fix` | Apply remediation | `{"action_type": "apply_fix", "target": "endpoint_security", "parameters": {"fix_type": "isolate_host", "config_key": "ENG-WORKSTATION-47"}}` |
+| `write_terraform` | Generate + validate Terraform | `{"action_type": "write_terraform", "parameters": {"resource_type": "aws_network_acl", "config": "cidr=50.16.16.211/32 rule=DENY"}}` |
+| `verify` | Health / security check | `{"action_type": "verify", "target": "network_ids"}` |
 | `escalate` | Hand off (partial credit) | `{"action_type": "escalate"}` |
+
+**CloudOps `fix_type` options**: `terminate`, `block_public_access`, `fix_iam`, `adjust_config`, `enable_rate_limiting`
+
+**SOC `fix_type` options**: `revoke_session`, `block_ip`, `isolate_host`, `quarantine`, `revoke_credentials`, `revoke_access`
 
 ---
 
