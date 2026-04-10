@@ -3,9 +3,9 @@ requires      = ["setuptools>=45", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name             = "openenv-aiops-incident-response"
-version          = "0.1.0"
-description      = "AIOps Incident Response Environment for OpenEnv"
+name             = "openenv-cloudops-intelligence"
+version          = "0.2.0"
+description      = "CloudOps Intelligence Environment — FinOps, Security, and Incident Response for OpenEnv"
 requires-python  = ">=3.10"
 dependencies     = [
     "openenv-core[core]>=0.2.2",
