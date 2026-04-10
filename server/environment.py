@@ -1,29 +1,36 @@
 """
-AIOps Incident Response Environment — core logic.
+CloudOps Intelligence Environment — core logic.
 
-Simulates the on-call engineering workflow for three classes of real production
-incidents. The agent acts as an on-call engineer who must:
-  1. Read the initial alert and service health dashboard.
-  2. Investigate root causes by querying logs and metrics.
-  3. Apply targeted fixes.
-  4. Verify that all services return to healthy status.
-
-This is a purely text-based, step-based environment. There is no spatial grid,
-no physics engine, and no game-like mechanics. Every scenario is drawn from
-real-world production incident patterns documented in SRE literature.
+Simulates the cloud operations workflow that every cloud engineering and SRE
+team performs daily: cost anomaly investigation (FinOps), security posture
+remediation, and live incident response — combined into three progressively
+harder tasks.
 
 Task difficulty:
-  easy   — 1 root cause, 3 services, 15 steps
-  medium — 2 root causes, 5 services, 25 steps
-  hard   — 3 root causes, 7 services, 40 steps
+  easy   — FinOps: billing spike from zombie EC2 instances (1 root cause, 15 steps)
+  medium — Security + SRE: S3 public exposure + broken service IAM (2 root causes, 25 steps)
+  hard   — DDoS + FinOps + SRE: live attack, WAF deployment via Terraform,
+           runaway auto-scaling cost ($50k/hr), cascading service failures
+           (3 root causes, 40 steps)
 
-Reward structure (all components are normalised to [0, 1]):
-  +W_ROOT_CAUSE   fractional credit when a new root cause is identified
-  +W_FIX_APPLIED  fractional credit when a correct fix is applied
-  +W_VERIFY       credit when a fixed service passes a health check
-  +completion_bonus  +0.20 when ALL root causes fixed and ALL services healthy
-  -W_WRONG_FIX    penalty for applying a fix to the wrong service
-  -W_REDUNDANT    small penalty for repeated identical investigations
+Action space (all text-based — no spatial grids, no physics):
+  view_logs(service)                         — service log output
+  view_metrics(service, metric)              — time-series data
+  list_resources(type, filter?)              — AWS resource inventory
+  run_cli(command)                           — AWS CLI simulation
+  view_billing(service?, period?)            — cost and usage report
+  apply_fix(target, fix_type, params)        — apply remediation
+  write_terraform(resource_type, config)     — generate + validate Terraform
+  verify(target)                             — health/security check
+  escalate                                   — hand off (partial credit)
+
+Reward structure (all normalised to [0, 1]):
+  +W_ROOT_CAUSE    per new root cause correctly identified
+  +W_FIX_APPLIED   per correct fix applied
+  +W_VERIFY        per service/resource that passes a health/security check
+  +W_COMPLETION    episode completion bonus
+  -W_WRONG_FIX     penalty for wrong-target fix
+  -W_REDUNDANT     penalty for repeated identical investigation
 """
 
 import uuid
@@ -41,148 +48,170 @@ try:
 except ImportError:
     from models import IncidentAction, IncidentObservation, IncidentState, ServiceHealth  # type: ignore[no-redef]
 
-
 # ---------------------------------------------------------------------------
 # Reward weights
 # ---------------------------------------------------------------------------
-W_ROOT_CAUSE     = 0.30   # per root cause correctly identified
-W_FIX_APPLIED    = 0.30   # per correct fix applied
-W_VERIFY         = 0.10   # per service health-check passed after fix
-W_COMPLETION     = 0.20   # episode completion bonus (all fixed + all healthy)
-W_WRONG_FIX      = 0.05   # penalty per wrong-target fix
-W_REDUNDANT      = 0.02   # penalty per redundant action
+W_ROOT_CAUSE  = 0.30
+W_FIX_APPLIED = 0.30
+W_VERIFY      = 0.10
+W_COMPLETION  = 0.20
+W_WRONG_FIX   = 0.05
+W_REDUNDANT   = 0.02
 
 # ---------------------------------------------------------------------------
-# Incident scenario library
-# Each scenario is fully self-contained: pre-defined log outputs, metric
-# tables, correct fix sequences, and grading rubrics. No external services
-# are called — the environment is a deterministic state machine.
+# Scenario library
 # ---------------------------------------------------------------------------
 SCENARIOS: Dict[str, dict] = {
 
     # ════════════════════════════════════════════════════════════════════════
-    # EASY — Database Connection Pool Exhaustion
-    # Pattern: high-volume event causes connection pool saturation on the
-    # database; payment service degrades; fix is adjusting max_connections.
+    # EASY — Cloud FinOps: Zombie EC2 Cost Anomaly
+    #
+    # Monthly AWS bill spiked 340%. Three EC2 instances have been running
+    # with 0% CPU utilization for 32 days following a product launch that
+    # was quietly cancelled. Combined cost: $3,200 / month.
+    # The agent must identify and terminate all three zombie instances.
     # ════════════════════════════════════════════════════════════════════════
     "easy": {
-        "title": "Payment Service Checkout Failures",
+        "title": "AWS Billing Spike — Zombie EC2 Instances",
+        "domain": "FinOps",
         "initial_alert": (
-            "CRITICAL ALERT — Payment Service Degraded\n"
-            "Time      : 2026-04-10 14:23:41 UTC\n"
-            "Service   : payment-service (pod: payment-prod-7b4f2)\n"
-            "Symptom   : HTTP 503 errors spiking — current error rate 47%\n"
-            "User Impact: Checkout failures affecting ~1,200 users / minute\n"
-            "SLA       : P1 — resolution required within 15 minutes\n"
-            "Runbook   : https://wiki.internal/runbooks/payment-service\n"
+            "BILLING ALERT — Unusual AWS Charges Detected\n"
+            "Time      : 2026-04-10 08:00:00 UTC\n"
+            "Account   : prod-account-7291 (us-east-1)\n"
+            "Symptom   : EC2 spend $12,400 this month (+340% vs $2,800 baseline)\n"
+            "Projected : $14,880 / month if unresolved (+$12,080 overspend)\n"
+            "SLA       : Finance review in 4 hours — identify and terminate waste\n"
+            "Runbook   : https://wiki.internal/runbooks/cloud-cost-anomaly\n"
         ),
         "services": {
-            "payment_service": {
-                "status": "degraded",
-                "error_rate_pct": 47.0,
-                "response_time_ms": 8400.0,
-                "uptime_pct": 61.0,
-                "logs": (
-                    "[14:23:41] ERROR payment_service: Failed to acquire DB connection — "
-                    "timeout after 30 000 ms\n"
-                    "[14:23:41] ERROR payment_service: HikariPool-1 — Connection is not "
-                    "available, request timed out after 30 000ms.\n"
-                    "[14:23:40] ERROR payment_service: org.springframework.dao."
-                    "DataAccessResourceFailureException: Unable to acquire JDBC Connection\n"
-                    "[14:23:38] WARN  payment_service: HikariPool-1 connection pool at "
-                    "90% capacity (9/10 connections in use)\n"
-                    "[14:23:32] INFO  payment_service: Processing payment order #847291\n"
-                    "[14:23:31] INFO  payment_service: Processing payment order #847290\n"
-                    "[14:23:10] INFO  payment_service: Flash sale traffic spike detected "
-                    "(3x normal load)\n"
-                ),
-            },
-            "user_db": {
-                "status": "degraded",
-                "error_rate_pct": 0.0,
-                "response_time_ms": 450.0,
-                "uptime_pct": 99.9,
-                "logs": (
-                    "[14:23:41] INFO  mysql: Active connections: 10 / max_connections: 10 "
-                    "— LIMIT REACHED\n"
-                    "[14:23:40] INFO  mysql: Thread_connected: 10, Thread_running: 10, "
-                    "Threads_waiting: 47\n"
-                    "[14:23:35] INFO  mysql: Active connections: 8\n"
-                    "[14:23:10] INFO  mysql: Incoming connection surge from "
-                    "payment_service (flash sale)\n"
-                    "[14:22:45] INFO  mysql: Query: SELECT * FROM transactions WHERE "
-                    "user_id=? (2 ms)\n"
-                ),
-                "metrics": {
-                    "connections": (
-                        "user_db — Active Connections (last 10 min)\n"
-                        "14:14  2 / 10\n"
-                        "14:16  3 / 10\n"
-                        "14:18  5 / 10\n"
-                        "14:20  7 / 10\n"
-                        "14:22  9 / 10   [WARN]\n"
-                        "14:23 10 / 10   [CRITICAL — LIMIT REACHED — 47 queries waiting]\n"
-                        "\nmax_connections config: 10 (set at last deployment 6 weeks ago)\n"
-                    ),
-                    "cpu": (
-                        "user_db — CPU Utilisation\n"
-                        "Current: 28%  |  P95 (1h): 31%  |  Threshold: 80%\n"
-                        "Status: NORMAL\n"
-                    ),
-                    "memory": (
-                        "user_db — Memory\n"
-                        "Used: 4.2 GB / 8 GB (52%)  |  Status: NORMAL\n"
-                    ),
-                },
-            },
-            "redis_cache": {
+            "billing_dashboard": {
                 "status": "healthy",
                 "error_rate_pct": 0.0,
-                "response_time_ms": 1.8,
+                "response_time_ms": 50.0,
                 "uptime_pct": 100.0,
                 "logs": (
-                    "[14:23:41] INFO  redis: GET session:user_847291 — HIT (0.1 ms)\n"
-                    "[14:23:38] INFO  redis: Memory usage: 45% (2.1 GB / 4 GB)\n"
-                    "[14:23:00] INFO  redis: Connected clients: 12  |  Status: OK\n"
+                    "[08:00:01] INFO  billing: Monthly spend alert triggered\n"
+                    "[08:00:01] WARN  billing: EC2 On-Demand charges: $9,600 (budget: $2,000)\n"
+                    "[08:00:01] WARN  billing: EBS volume charges: $2,800 (budget: $600)\n"
+                    "[08:00:01] INFO  billing: Cost anomaly detector: 3 resources flagged\n"
+                    "[08:00:00] INFO  billing: Top cost driver: us-east-1 m5.2xlarge instances\n"
                 ),
                 "metrics": {
-                    "memory": (
-                        "redis_cache — Memory\n"
-                        "Used: 2.1 GB / 4 GB (52%)  |  Status: NORMAL\n"
+                    "ec2_cost": (
+                        "EC2 Cost — Daily Trend (last 35 days)\n"
+                        "Mar 10  $93 / day   (baseline)\n"
+                        "Mar 11  $93 / day\n"
+                        "Mar 12  $93 / day\n"
+                        "Mar 13  $402 / day  [+332%] ← 3 m5.2xlarge instances launched\n"
+                        "Mar 14  $402 / day  [cost anomaly]\n"
+                        "Apr 10  $402 / day  [running 32 days — zero utilisation detected]\n"
+                        "\nTop resources by cost:\n"
+                        "  i-0a1b2c3d4e5f6789  m5.2xlarge  $0.384/hr  $295/month\n"
+                        "  i-0b2c3d4e5f678901  m5.2xlarge  $0.384/hr  $295/month\n"
+                        "  i-0c3d4e5f67890123  m5.2xlarge  $0.384/hr  $295/month\n"
                     ),
-                    "connections": (
-                        "redis_cache — Connections\n"
-                        "Current: 12  |  Max: 10 000  |  Status: NORMAL\n"
+                },
+            },
+            "ec2_fleet": {
+                "status": "degraded",
+                "error_rate_pct": 0.0,
+                "response_time_ms": 10.0,
+                "uptime_pct": 100.0,
+                "logs": (
+                    "[08:00:01] INFO  ec2: 12 instances running in us-east-1\n"
+                    "[08:00:01] WARN  ec2: Cost anomaly: 3 instances with CPU=0% for 32 days\n"
+                    "[08:00:00] INFO  ec2: Instances i-0a1b..., i-0b2c..., i-0c3d... "
+                    "launched 2026-03-09 for cancelled 'Project Phoenix' launch\n"
+                ),
+                "metrics": {
+                    "utilization": (
+                        "EC2 CPU Utilisation — Last 32 Days\n"
+                        "\nInstance ID           | Type        | Avg CPU | Max CPU | State   | Age\n"
+                        "i-0a1b2c3d4e5f6789  | m5.2xlarge  |  0.00%  |  0.02%  | running | 32d  ← ZOMBIE\n"
+                        "i-0b2c3d4e5f678901  | m5.2xlarge  |  0.00%  |  0.01%  | running | 32d  ← ZOMBIE\n"
+                        "i-0c3d4e5f67890123  | m5.2xlarge  |  0.00%  |  0.00%  | running | 32d  ← ZOMBIE\n"
+                        "i-0d4e5f6789012345  | t3.medium   | 42.00%  | 87.00%  | running |  8d  (prod)\n"
+                        "i-0e5f678901234567  | t3.medium   | 38.00%  | 79.00%  | running |  8d  (prod)\n"
+                        "... 7 more healthy prod instances ...\n"
+                        "\nRecommendation: Terminate i-0a1b..., i-0b2c..., i-0c3d... "
+                        "(saves $885/month, all tagged ProjectPhoenix:cancelled)\n"
+                    ),
+                    "tags": (
+                        "EC2 Instance Tags\n"
+                        "i-0a1b2c3d4e5f6789: Project=ProjectPhoenix, Status=cancelled, "
+                        "Owner=team-alpha, LaunchDate=2026-03-09\n"
+                        "i-0b2c3d4e5f678901: Project=ProjectPhoenix, Status=cancelled, "
+                        "Owner=team-alpha, LaunchDate=2026-03-09\n"
+                        "i-0c3d4e5f67890123: Project=ProjectPhoenix, Status=cancelled, "
+                        "Owner=team-alpha, LaunchDate=2026-03-09\n"
+                    ),
+                },
+                "cli_outputs": {
+                    "aws ec2 describe-instances": (
+                        "[\n"
+                        "  {\"InstanceId\": \"i-0a1b2c3d4e5f6789\", \"InstanceType\": \"m5.2xlarge\", "
+                        "\"State\": \"running\", \"LaunchTime\": \"2026-03-09T02:14:00Z\", "
+                        "\"Tags\": [{\"Key\": \"Project\", \"Value\": \"ProjectPhoenix\"}, "
+                        "{\"Key\": \"Status\", \"Value\": \"cancelled\"}]},\n"
+                        "  {\"InstanceId\": \"i-0b2c3d4e5f678901\", \"InstanceType\": \"m5.2xlarge\", "
+                        "\"State\": \"running\", \"LaunchTime\": \"2026-03-09T02:15:00Z\", "
+                        "\"Tags\": [{\"Key\": \"Project\", \"Value\": \"ProjectPhoenix\"}, "
+                        "{\"Key\": \"Status\", \"Value\": \"cancelled\"}]},\n"
+                        "  {\"InstanceId\": \"i-0c3d4e5f67890123\", \"InstanceType\": \"m5.2xlarge\", "
+                        "\"State\": \"running\", \"LaunchTime\": \"2026-03-09T02:15:00Z\", "
+                        "\"Tags\": [{\"Key\": \"Project\", \"Value\": \"ProjectPhoenix\"}, "
+                        "{\"Key\": \"Status\", \"Value\": \"cancelled\"}]}\n"
+                        "]\n"
+                        "(3 zombie instances. 9 active prod instances omitted.)"
+                    ),
+                    "aws ec2 terminate-instances": (
+                        "{\n"
+                        "  \"TerminatingInstances\": [\n"
+                        "    {\"InstanceId\": \"<target>\", "
+                        "\"CurrentState\": {\"Name\": \"shutting-down\"}, "
+                        "\"PreviousState\": {\"Name\": \"running\"}}\n"
+                        "  ]\n"
+                        "}"
                     ),
                 },
             },
         },
-        "root_causes": ["user_db_connection_pool_exhausted"],
+        "root_causes": ["zombie_ec2_cost_overrun"],
         "correct_fixes": {
-            "user_db_connection_pool_exhausted": {
-                "target": "user_db",
-                "affected_services": ["payment_service"],
+            "zombie_ec2_cost_overrun": {
+                "target": "ec2_fleet",
+                "affected_services": ["billing_dashboard"],
                 "fix_types": [
-                    "adjust_config",
-                    "increase_capacity",
-                    "increase_connections",
-                    "adjust_max_connections",
+                    "terminate",
+                    "terminate_instance",
+                    "stop_instance",
+                    "delete_resource",
+                    "cleanup",
+                    "remove",
                 ],
-                "config_keys": ["max_connections", "pool_size", "connection_limit"],
+                "config_keys": [
+                    "instance_id",
+                    "i-0a1b2c3d4e5f6789",
+                    "i-0b2c3d4e5f678901",
+                    "i-0c3d4e5f67890123",
+                    "zombie",
+                    "project_phoenix",
+                    "cancelled",
+                ],
             }
         },
-        "verify_services": ["payment_service"],
+        "verify_services": ["ec2_fleet"],
         "post_fix_status": {
-            "payment_service": {
-                "status": "healthy",
-                "error_rate_pct": 0.2,
-                "response_time_ms": 95.0,
-                "uptime_pct": 99.9,
-            },
-            "user_db": {
+            "ec2_fleet": {
                 "status": "healthy",
                 "error_rate_pct": 0.0,
-                "response_time_ms": 18.0,
+                "response_time_ms": 10.0,
+                "uptime_pct": 100.0,
+            },
+            "billing_dashboard": {
+                "status": "healthy",
+                "error_rate_pct": 0.0,
+                "response_time_ms": 50.0,
                 "uptime_pct": 100.0,
             },
         },
@@ -191,188 +220,241 @@ SCENARIOS: Dict[str, dict] = {
     },
 
     # ════════════════════════════════════════════════════════════════════════
-    # MEDIUM — Cache Stampede + Missing Index
-    # Pattern: product catalog Redis cache TTL mis-set to 0 causes all keys
-    # to expire immediately; simultaneously a missing DB index causes full
-    # table scans as cold cache requests pile in.
+    # MEDIUM — Security + SRE: S3 Public Exposure + Broken IAM
+    #
+    # Two concurrent issues triggered by a single misconfigured deployment:
+    # 1. S3 bucket prod-customer-data accidentally set to public-read-write
+    #    (CRITICAL — PII exposed to the public internet for 3 hours)
+    # 2. Payment service IAM role has a typo in the S3 permission, causing
+    #    all payment flows to return 401/403 errors.
     # ════════════════════════════════════════════════════════════════════════
     "medium": {
-        "title": "Product Catalog Degradation — High Latency & Errors",
+        "title": "Security Incident: S3 Public Exposure + Payment Service Auth Failure",
+        "domain": "Security + SRE",
         "initial_alert": (
-            "HIGH ALERT — Catalog & Search Services Degraded\n"
-            "Time      : 2026-04-10 09:11:03 UTC\n"
-            "Services  : catalog-service, search-service\n"
-            "Symptom   : P95 response time > 8 s (SLA: 500 ms); error rate 22%\n"
-            "User Impact: Product browsing broken for ~45 000 active users\n"
-            "SLA       : P1 — resolution required within 25 minutes\n"
-            "Runbook   : https://wiki.internal/runbooks/catalog-service\n"
+            "P0 SECURITY ALERT — Critical Vulnerability + Service Outage\n"
+            "Time      : 2026-04-10 11:47:03 UTC\n"
+            "Issues    : S3 data exposure (CRITICAL) + payment-service auth failures\n"
+            "Symptom 1 : AWS Trusted Advisor: S3 bucket 'prod-customer-data' is PUBLIC\n"
+            "Symptom 2 : payment-service HTTP 403 error rate 89% — checkout broken\n"
+            "User Impact: ~22,000 customers cannot complete purchases\n"
+            "Compliance : GDPR breach window open since 08:52 UTC (2h 55m ago)\n"
+            "SLA       : Security: immediate | Service: < 15 min\n"
+            "Runbook   : https://wiki.internal/runbooks/s3-exposure\n"
         ),
         "services": {
-            "catalog_service": {
+            "payment_service": {
                 "status": "degraded",
-                "error_rate_pct": 22.0,
-                "response_time_ms": 8700.0,
-                "uptime_pct": 78.0,
+                "error_rate_pct": 89.0,
+                "response_time_ms": 180.0,
+                "uptime_pct": 11.0,
                 "logs": (
-                    "[09:11:02] ERROR catalog_service: Redis GET product:* — MISS "
-                    "(100% miss rate over last 60 s)\n"
-                    "[09:11:02] ERROR catalog_service: DB query timeout — "
-                    "SELECT * FROM products WHERE category=? took > 8 000 ms\n"
-                    "[09:10:58] WARN  catalog_service: Cache miss storm detected — "
-                    "1 800 cache misses / sec (baseline: 12 / sec)\n"
-                    "[09:10:55] WARN  catalog_service: Falling back to DB for all "
-                    "product lookups (cache unavailable)\n"
-                    "[09:10:50] INFO  catalog_service: Deployment v2.4.1 completed "
-                    "(config change: cache_ttl updated)\n"
+                    "[11:47:02] ERROR payment_service: S3 access denied — "
+                    "s3:GetObject on arn:aws:s3:::prod-customer-data/certs/payment.pem\n"
+                    "[11:47:01] ERROR payment_service: "
+                    "com.amazonaws.services.s3.model.AmazonS3Exception: "
+                    "Access Denied (Service: Amazon S3; Status Code: 403)\n"
+                    "[11:47:00] WARN  payment_service: Payment certificate load failed — "
+                    "falling back to insecure mode (rejected by gateway)\n"
+                    "[11:46:55] ERROR payment_service: TLS handshake failed — "
+                    "certificate unavailable from S3\n"
+                    "[11:45:50] INFO  payment_service: Deployment v4.2.0 completed "
+                    "(IAM role updated: payment-service-role)\n"
                 ),
             },
-            "search_service": {
-                "status": "degraded",
-                "error_rate_pct": 18.0,
-                "response_time_ms": 6200.0,
-                "uptime_pct": 82.0,
-                "logs": (
-                    "[09:11:02] ERROR search_service: Upstream catalog_service "
-                    "returning 503 (timeout)\n"
-                    "[09:10:58] WARN  search_service: Circuit breaker OPEN for "
-                    "catalog_service (5 consecutive failures)\n"
-                    "[09:10:52] INFO  search_service: Serving stale search index "
-                    "(fallback mode active)\n"
-                ),
-            },
-            "redis_cache": {
+            "s3_prod_customer_data": {
                 "status": "degraded",
                 "error_rate_pct": 0.0,
-                "response_time_ms": 1.2,
+                "response_time_ms": 8.0,
                 "uptime_pct": 100.0,
                 "logs": (
-                    "[09:11:02] WARN  redis: Key expiry rate: 1 847 / sec "
-                    "(baseline: 12 / sec) — ALL product keys expiring immediately\n"
-                    "[09:10:58] INFO  redis: Cache hit rate: 0.1% (baseline: 96%)\n"
-                    "[09:10:50] INFO  redis: FLUSHDB executed for product namespace\n"
-                    "[09:10:50] INFO  redis: SET product:config cache_ttl=0 "
-                    "(deployment config push)\n"
+                    "[11:47:02] WARN  s3: 47 anonymous GET requests to "
+                    "prod-customer-data/customers/ in last 10 min\n"
+                    "[11:47:00] WARN  s3: Public access block disabled on "
+                    "prod-customer-data (changed by deployment v4.2.0)\n"
+                    "[11:46:58] INFO  s3: Bucket ACL changed to public-read-write "
+                    "by iam:deployment-user at 08:52:11 UTC\n"
+                    "[11:46:55] WARN  s3: Anonymous PUT request to "
+                    "prod-customer-data/test.txt (succeeded — public write enabled!)\n"
                 ),
-                "metrics": {
-                    "hit_rate": (
-                        "redis_cache — Cache Hit Rate (last 15 min)\n"
-                        "09:00  96.2%\n"
-                        "09:05  95.8%\n"
-                        "09:10  95.1%\n"
-                        "09:10:50 [DEPLOY] cache_ttl set to 0\n"
-                        "09:11   0.1%  [CRITICAL — cache_ttl=0 causes immediate expiry]\n"
+                "cli_outputs": {
+                    "aws s3api get-bucket-acl": (
+                        "{\n"
+                        "  \"Owner\": {\"DisplayName\": \"prod-account\"},\n"
+                        "  \"Grants\": [\n"
+                        "    {\"Grantee\": {\"Type\": \"CanonicalUser\"}, "
+                        "\"Permission\": \"FULL_CONTROL\"},\n"
+                        "    {\"Grantee\": {\"Type\": \"Group\", "
+                        "\"URI\": \"http://acs.amazonaws.com/groups/global/AllUsers\"}, "
+                        "\"Permission\": \"READ\"},\n"
+                        "    {\"Grantee\": {\"Type\": \"Group\", "
+                        "\"URI\": \"http://acs.amazonaws.com/groups/global/AllUsers\"}, "
+                        "\"Permission\": \"WRITE\"}\n"
+                        "  ]\n"
+                        "}\n"
+                        "⚠️  CRITICAL: public-read-write ACL detected on bucket "
+                        "containing customer PII data."
                     ),
-                    "memory": (
-                        "redis_cache — Memory\n"
-                        "Used: 0.2 GB / 8 GB (2.5%)  |  "
-                        "NOTE: low memory due to immediate key expiry\n"
+                    "aws s3api get-public-access-block": (
+                        "{\n"
+                        "  \"PublicAccessBlockConfiguration\": {\n"
+                        "    \"BlockPublicAcls\": false,\n"
+                        "    \"IgnorePublicAcls\": false,\n"
+                        "    \"BlockPublicPolicy\": false,\n"
+                        "    \"RestrictPublicBuckets\": false\n"
+                        "  }\n"
+                        "}\n"
+                        "All public access blocks DISABLED — bucket is fully public."
+                    ),
+                },
+                "metrics": {
+                    "access": (
+                        "S3 — Request Source (last 3 hours)\n"
+                        "08:52 UTC: public-read-write ACL applied\n"
+                        "09:00–11:47: 2,847 anonymous GET requests (customers/ prefix)\n"
+                        "11:41–11:47: 12 anonymous PUT requests (test writes)\n"
+                        "Status: CRITICAL DATA EXPOSURE — public internet can read and write\n"
                     ),
                 },
             },
-            "product_db": {
+            "iam_payment_role": {
                 "status": "degraded",
-                "error_rate_pct": 5.0,
-                "response_time_ms": 9100.0,
-                "uptime_pct": 94.0,
+                "error_rate_pct": 0.0,
+                "response_time_ms": 5.0,
+                "uptime_pct": 100.0,
                 "logs": (
-                    "[09:11:02] ERROR mysql: Slow query: SELECT * FROM products "
-                    "WHERE category=? — 8 947 ms (full table scan: 4.2M rows)\n"
-                    "[09:11:00] WARN  mysql: CPU at 97% — query queue: 234 pending\n"
-                    "[09:10:58] INFO  mysql: Missing index on products.category_id "
-                    "— EXPLAIN shows type=ALL (full scan)\n"
-                    "[09:10:50] INFO  mysql: Deployment migration ran: "
-                    "ALTER TABLE products DROP INDEX idx_category (migration v2.4.1)\n"
+                    "[11:47:01] WARN  iam: Deny on s3:GetObject for role "
+                    "payment-service-role — policy missing s3:GetObject action\n"
+                    "[11:45:50] INFO  iam: Role policy updated by deployment v4.2.0\n"
+                    "[11:45:48] INFO  iam: Previous policy had s3:GetObject; "
+                    "new policy has s3:GetObejct (typo — invalid action, silently ignored)\n"
                 ),
+                "cli_outputs": {
+                    "aws iam get-role-policy": (
+                        "{\n"
+                        "  \"RoleName\": \"payment-service-role\",\n"
+                        "  \"PolicyName\": \"payment-s3-access\",\n"
+                        "  \"PolicyDocument\": {\n"
+                        "    \"Statement\": [{\n"
+                        "      \"Effect\": \"Allow\",\n"
+                        "      \"Action\": [\n"
+                        "        \"s3:GetObejct\",\n"
+                        "        \"s3:ListBucket\"\n"
+                        "      ],\n"
+                        "      \"Resource\": \"arn:aws:s3:::prod-customer-data/*\"\n"
+                        "    }]\n"
+                        "  }\n"
+                        "}\n"
+                        "⚠️  TYPO DETECTED: 's3:GetObejct' is not a valid IAM action "
+                        "(should be 's3:GetObject'). Permission is silently ignored by AWS."
+                    ),
+                },
                 "metrics": {
-                    "cpu": (
-                        "product_db — CPU Utilisation\n"
-                        "09:05   22%\n"
-                        "09:10   28%\n"
-                        "09:10:50 [DEPLOY — index dropped]\n"
-                        "09:11   97%  [CRITICAL]\n"
-                    ),
-                    "slow_queries": (
-                        "product_db — Slow Queries (> 1 000 ms)\n"
-                        "09:05  0 / min\n"
-                        "09:11  234 / min  [CRITICAL]\n"
-                        "Top query: SELECT * FROM products WHERE category_id=? "
-                        "(no index — full table scan 4.2 M rows)\n"
-                    ),
-                    "connections": (
-                        "product_db — Connections\n"
-                        "Current: 189 / 200 (94%)  |  Status: WARNING\n"
+                    "auth": (
+                        "IAM Role — Auth Failures (last 30 min)\n"
+                        "payment-service-role: 892 denied s3:GetObject calls\n"
+                        "Denial reason: Action 's3:GetObejct' not in policy "
+                        "(invalid action string — typo in deployment v4.2.0)\n"
                     ),
                 },
             },
             "api_gateway": {
+                "status": "degraded",
+                "error_rate_pct": 89.0,
+                "response_time_ms": 180.0,
+                "uptime_pct": 11.0,
+                "logs": (
+                    "[11:47:02] ERROR api_gateway: /checkout → payment_service 403\n"
+                    "[11:47:00] WARN  api_gateway: Payment flow failure rate: 89%\n"
+                ),
+            },
+            "auth_service": {
                 "status": "healthy",
-                "error_rate_pct": 0.3,
+                "error_rate_pct": 0.1,
                 "response_time_ms": 12.0,
                 "uptime_pct": 99.9,
                 "logs": (
-                    "[09:11:02] INFO  api_gateway: Routing /api/catalog → "
-                    "catalog_service (upstream degraded)\n"
-                    "[09:11:00] WARN  api_gateway: Upstream catalog_service "
-                    "timeout rate: 22%\n"
+                    "[11:47:00] INFO  auth_service: User sessions: 22,047 active\n"
+                    "[11:47:00] WARN  auth_service: Payment errors upstream\n"
                 ),
             },
         },
         "root_causes": [
-            "redis_cache_ttl_zero",
-            "product_db_missing_index",
+            "s3_public_access_enabled",
+            "iam_role_typo",
         ],
         "correct_fixes": {
-            "redis_cache_ttl_zero": {
-                "target": "redis_cache",
-                "affected_services": ["catalog_service", "search_service"],
+            "s3_public_access_enabled": {
+                "target": "s3_prod_customer_data",
+                "affected_services": [],
                 "fix_types": [
-                    "adjust_config",
-                    "fix_ttl",
-                    "set_cache_ttl",
+                    "update_policy",
+                    "block_public_access",
+                    "restrict_access",
+                    "remove_public_acl",
+                    "apply_bucket_policy",
+                    "put_public_access_block",
+                    "fix_acl",
                     "rollback",
-                    "adjust_ttl",
+                    "adjust_config",
                 ],
-                "config_keys": ["cache_ttl", "ttl", "key_ttl"],
+                "config_keys": [
+                    "public_access_block",
+                    "acl",
+                    "block_public_acls",
+                    "restrict_public_buckets",
+                    "private",
+                    "bucket_policy",
+                ],
             },
-            "product_db_missing_index": {
-                "target": "product_db",
-                "affected_services": ["catalog_service"],
+            "iam_role_typo": {
+                "target": "iam_payment_role",
+                "affected_services": ["payment_service", "api_gateway"],
                 "fix_types": [
+                    "update_policy",
+                    "fix_iam",
+                    "fix_permission",
+                    "correct_action",
+                    "attach_policy",
                     "adjust_config",
-                    "create_index",
-                    "add_index",
-                    "rebuild_index",
                     "rollback",
-                    "fix_index",
+                    "put_role_policy",
                 ],
-                "config_keys": ["index_category_id", "idx_category", "category_index"],
+                "config_keys": [
+                    "s3:GetObject",
+                    "getobject",
+                    "iam_policy",
+                    "payment_service_role",
+                    "s3_permission",
+                    "typo",
+                ],
             },
         },
-        "verify_services": ["catalog_service", "search_service"],
+        "verify_services": ["payment_service", "s3_prod_customer_data"],
         "post_fix_status": {
-            "catalog_service": {
+            "payment_service": {
                 "status": "healthy",
                 "error_rate_pct": 0.1,
-                "response_time_ms": 120.0,
+                "response_time_ms": 95.0,
                 "uptime_pct": 99.9,
             },
-            "search_service": {
-                "status": "healthy",
-                "error_rate_pct": 0.0,
-                "response_time_ms": 85.0,
-                "uptime_pct": 99.9,
-            },
-            "redis_cache": {
-                "status": "healthy",
-                "error_rate_pct": 0.0,
-                "response_time_ms": 1.2,
-                "uptime_pct": 100.0,
-            },
-            "product_db": {
+            "s3_prod_customer_data": {
                 "status": "healthy",
                 "error_rate_pct": 0.0,
                 "response_time_ms": 8.0,
                 "uptime_pct": 100.0,
+            },
+            "iam_payment_role": {
+                "status": "healthy",
+                "error_rate_pct": 0.0,
+                "response_time_ms": 5.0,
+                "uptime_pct": 100.0,
+            },
+            "api_gateway": {
+                "status": "healthy",
+                "error_rate_pct": 0.2,
+                "response_time_ms": 85.0,
+                "uptime_pct": 99.9,
             },
         },
         "max_steps": 25,
@@ -380,283 +462,283 @@ SCENARIOS: Dict[str, dict] = {
     },
 
     # ════════════════════════════════════════════════════════════════════════
-    # HARD — Multi-Root-Cause Cascade
-    # Pattern: three independent failures cascade:
-    #   1. Message queue disk full → order events silently dropped
-    #   2. Order service OOM (memory leak in v3.1.0) → repeated crash-loops
-    #   3. Inventory DB deadlock (concurrent LOCK TABLE from reporting job)
-    # Must identify all 3 and fix in dependency order.
+    # HARD — DDoS + FinOps + SRE: Live Attack, WAF Deployment, Cost Runaway
+    #
+    # A coordinated DDoS from three CIDR ranges is flooding the API gateway.
+    # Auto-scaling responds by spinning up 200 extra instances (cost $50k/hr).
+    # The attack cascades: order service and inventory service begin failing
+    # as legitimate traffic cannot get through.
+    # Three root causes — each in a different domain:
+    #   1. No WAF configured to block malicious IPs (Security)
+    #   2. Auto-scaling max_capacity mis-set to unlimited (FinOps)
+    #   3. Rate-limiting not enabled on the API gateway (SRE)
     # ════════════════════════════════════════════════════════════════════════
     "hard": {
-        "title": "Order Processing System — Multi-Service P0 Incident",
+        "title": "DDoS Attack — WAF Deployment + Runaway Auto-Scaling + Cascading Failures",
+        "domain": "Security + FinOps + SRE",
         "initial_alert": (
-            "P0 INCIDENT — Order Processing System Down\n"
-            "Time      : 2026-04-10 03:47:22 UTC\n"
-            "Services  : order-service, inventory-service, notification-service\n"
-            "Symptom   : Orders not processing; inventory desync; notifications "
-            "undelivered\n"
-            "User Impact: CRITICAL — ~8 200 orders stuck; revenue loss $420 / min\n"
+            "P0 INCIDENT — Active DDoS Attack + Cascading Failures\n"
+            "Time      : 2026-04-10 03:12:44 UTC\n"
+            "Attack    : Volumetric DDoS from 3 CIDR ranges — 840k req/min\n"
+            "Services  : api_gateway (90% errors), order_service (down), "
+            "inventory_service (degraded)\n"
+            "Cost      : Auto-scaling spawned 200 extra EC2 instances — "
+            "CURRENT COST $51,200/hr\n"
+            "User Impact: ALL purchases and inventory updates blocked\n"
+            "Compliance: WAF not configured — DDoS protection SLA breached\n"
             "SLA       : P0 — immediate response required\n"
-            "Runbook   : https://wiki.internal/runbooks/order-processing\n"
+            "Runbook   : https://wiki.internal/runbooks/ddos-response\n"
         ),
         "services": {
+            "api_gateway": {
+                "status": "degraded",
+                "error_rate_pct": 90.0,
+                "response_time_ms": 28000.0,
+                "uptime_pct": 10.0,
+                "logs": (
+                    "[03:12:43] ERROR api_gateway: Request flood detected — "
+                    "840,000 req/min (baseline: 1,200 req/min)\n"
+                    "[03:12:43] WARN  api_gateway: Top source IPs — "
+                    "203.0.113.x (280k req/min), "
+                    "198.51.100.x (310k req/min), "
+                    "192.0.2.x (250k req/min)\n"
+                    "[03:12:41] ERROR api_gateway: Rate limit threshold exceeded "
+                    "(throttling disabled — no rate limit policy configured)\n"
+                    "[03:12:40] WARN  api_gateway: No WAF Web ACL attached to this "
+                    "API Gateway stage\n"
+                    "[03:12:38] INFO  api_gateway: Auto-scaling triggered — "
+                    "target group capacity: 213 instances (was: 13)\n"
+                ),
+                "metrics": {
+                    "request_rate": (
+                        "API Gateway — Request Rate (last 30 min)\n"
+                        "02:42  1,180 req/min (normal)\n"
+                        "02:52  1,210 req/min (normal)\n"
+                        "03:00  8,400 req/min [attack begins]\n"
+                        "03:05  120,000 req/min [escalating]\n"
+                        "03:10  580,000 req/min [DDoS peak]\n"
+                        "03:12  840,000 req/min [current]\n"
+                        "\nAttack source CIDRs:\n"
+                        "  203.0.113.0/24   — 280,000 req/min (33%)\n"
+                        "  198.51.100.0/24  — 310,000 req/min (37%)\n"
+                        "  192.0.2.0/24     — 250,000 req/min (30%)\n"
+                        "Legitimate traffic: ~1,200 req/min (completely masked)\n"
+                    ),
+                    "waf_status": (
+                        "WAF Configuration — api_gateway (us-east-1)\n"
+                        "Web ACL attached: NONE\n"
+                        "Rate-based rules: NOT CONFIGURED\n"
+                        "IP block rules: NOT CONFIGURED\n"
+                        "AWS Shield Advanced: NOT ENABLED\n"
+                        "\nRecommendation: Deploy WAFv2 Web ACL with IP set block rule "
+                        "for the 3 malicious CIDRs and attach to api_gateway stage.\n"
+                    ),
+                },
+                "cli_outputs": {
+                    "aws wafv2 list-web-acls": (
+                        "{\n"
+                        "  \"WebACLs\": []\n"
+                        "}\n"
+                        "No WAF Web ACLs configured in us-east-1."
+                    ),
+                    "aws vpc get-flow-logs": (
+                        "VPC Flow Logs — Last 15 min (attack traffic only)\n"
+                        "2026-04-10T03:00:00Z 203.0.113.0/24  → 10.0.1.50:443 "
+                        "ACCEPT 280000 packets (SYN flood pattern)\n"
+                        "2026-04-10T03:00:00Z 198.51.100.0/24 → 10.0.1.50:443 "
+                        "ACCEPT 310000 packets (HTTP flood pattern)\n"
+                        "2026-04-10T03:00:00Z 192.0.2.0/24    → 10.0.1.50:443 "
+                        "ACCEPT 250000 packets (GET flood pattern)\n"
+                        "Source IPs not in any blocklist. No WAF rules matched.\n"
+                    ),
+                },
+            },
+            "auto_scaling": {
+                "status": "degraded",
+                "error_rate_pct": 0.0,
+                "response_time_ms": 5.0,
+                "uptime_pct": 100.0,
+                "logs": (
+                    "[03:12:40] WARN  auto_scaling: Scale-out event — "
+                    "target: 213 instances (was: 13)\n"
+                    "[03:12:40] WARN  auto_scaling: max_capacity=500 — "
+                    "no upper bound protection against DDoS-driven scaling\n"
+                    "[03:12:38] INFO  auto_scaling: Launching 200 m5.xlarge instances\n"
+                    "[03:12:30] WARN  auto_scaling: Cost alarm: $51,200/hr "
+                    "(200 × m5.xlarge × $0.192/hr + data transfer)\n"
+                    "[03:00:00] INFO  auto_scaling: Scale-out triggered by "
+                    "CPU > 70% threshold (100% CPU from DDoS flood processing)\n"
+                ),
+                "metrics": {
+                    "cost": (
+                        "Auto-Scaling — Realtime Cost\n"
+                        "02:59  13 instances  $2.50/hr (baseline)\n"
+                        "03:00  18 instances  $3.46/hr [scale-out begins]\n"
+                        "03:05  67 instances  $12.86/hr\n"
+                        "03:10  143 instances  $27.46/hr\n"
+                        "03:12  213 instances  $40.90/hr [current]\n"
+                        "Projected at max_capacity=500: $96.00/hr ($84,096/day)\n"
+                        "\nmax_capacity config: 500 (NO PROTECTION AGAINST RUNAWAY SCALING)\n"
+                        "Recommended: Set max_capacity=20 and enable scaling protection\n"
+                    ),
+                    "instances": (
+                        "Auto-Scaling Group — Instance Count\n"
+                        "Current: 213 running (200 unnecessary — DDoS-driven)\n"
+                        "min_size: 2, desired: 213, max_size: 500\n"
+                        "Cooldown: 60s (insufficient for DDoS scenarios)\n"
+                    ),
+                },
+                "cli_outputs": {
+                    "aws autoscaling describe-auto-scaling-groups": (
+                        "{\n"
+                        "  \"AutoScalingGroupName\": \"api-asg-prod\",\n"
+                        "  \"MinSize\": 2,\n"
+                        "  \"MaxSize\": 500,\n"
+                        "  \"DesiredCapacity\": 213,\n"
+                        "  \"Instances\": \"213 running (200 launched in last 12 min)\"\n"
+                        "}\n"
+                        "COST ALERT: 200 excess instances at $0.192/hr = $38.40/hr ongoing"
+                    ),
+                },
+            },
             "order_service": {
                 "status": "down",
                 "error_rate_pct": 100.0,
                 "response_time_ms": 0.0,
-                "uptime_pct": 12.0,
-                "logs": (
-                    "[03:47:20] FATAL order_service: Out of memory — "
-                    "Container killed by OOM killer (RSS: 4 096 MB / limit: 4 096 MB)\n"
-                    "[03:47:18] ERROR order_service: java.lang.OutOfMemoryError: "
-                    "Java heap space\n"
-                    "[03:47:15] WARN  order_service: Heap usage at 98% (4 014 MB / "
-                    "4 096 MB) — GC overhead limit exceeded\n"
-                    "[03:46:50] WARN  order_service: Heap growing abnormally — "
-                    "possible memory leak in ProductCacheManager (v3.1.0 introduced "
-                    "static cache with no eviction)\n"
-                    "[03:44:00] INFO  order_service: Deployment v3.1.0 completed "
-                    "(feature: product recommendation caching)\n"
-                    "[03:47:22] INFO  k8s: CrashLoopBackOff — pod order-prod-9f3a1 "
-                    "restarted 14 times in last 30 min\n"
-                ),
-                "metrics": {
-                    "memory": (
-                        "order_service — JVM Heap Memory\n"
-                        "03:40  1.2 GB / 4 GB (30%)\n"
-                        "03:42  1.9 GB / 4 GB (47%)\n"
-                        "03:44  2.8 GB / 4 GB (70%)  [DEPLOY v3.1.0]\n"
-                        "03:45  3.5 GB / 4 GB (87%)\n"
-                        "03:46  3.9 GB / 4 GB (97%)  [CRITICAL]\n"
-                        "03:47  OOM kill\n"
-                        "\nNOTE: Heap growth rate +400 MB/min — abnormal "
-                        "(baseline: +5 MB/min). Leak correlates with v3.1.0 "
-                        "ProductCacheManager (unbounded static cache).\n"
-                    ),
-                    "cpu": (
-                        "order_service — CPU\n"
-                        "Current: 0% (pod crashed)  |  Pre-crash P95: 89%\n"
-                        "GC overhead pre-crash: 94% of CPU time\n"
-                    ),
-                    "restarts": (
-                        "order_service — Pod Restarts\n"
-                        "Last 30 min: 14 restarts (CrashLoopBackOff)\n"
-                        "First restart: 03:44:12 (2 min after v3.1.0 deploy)\n"
-                    ),
-                },
-            },
-            "message_queue": {
-                "status": "down",
-                "error_rate_pct": 100.0,
-                "response_time_ms": 0.0,
                 "uptime_pct": 0.0,
                 "logs": (
-                    "[03:47:20] FATAL rabbitmq: Disk alarm triggered — "
-                    "disk_free: 0 bytes (limit: 50 MB) — all producers BLOCKED\n"
-                    "[03:47:18] ERROR rabbitmq: Message queue blocked — "
-                    "no disk space to persist messages\n"
-                    "[03:46:00] WARN  rabbitmq: Disk space critical — "
-                    "1.2 GB remaining (2% of 60 GB)\n"
-                    "[03:40:00] WARN  rabbitmq: Disk space low — "
-                    "5 GB remaining (8% of 60 GB)\n"
-                    "[03:00:00] INFO  rabbitmq: Dead letter queue growing: "
-                    "dlq.orders — 8 247 unacknowledged messages (retention: 7 days)\n"
-                    "[02:00:00] INFO  rabbitmq: 7-day message retention filled "
-                    "60 GB disk — no automatic cleanup configured\n"
+                    "[03:12:43] FATAL order_service: Overloaded by DDoS traffic — "
+                    "connection queue full (32768 / 32768)\n"
+                    "[03:12:40] ERROR order_service: Unable to process legitimate "
+                    "orders — all threads busy serving DDoS requests\n"
+                    "[03:12:35] WARN  order_service: Thread pool exhausted — "
+                    "no rate limiting at gateway layer\n"
                 ),
-                "metrics": {
-                    "disk": (
-                        "message_queue — Disk Usage\n"
-                        "02:00  58 GB / 60 GB (97%)  [Retention filled disk]\n"
-                        "03:40  59 GB / 60 GB (98%)  [WARN]\n"
-                        "03:46  59.9 GB / 60 GB (99.8%)  [CRITICAL]\n"
-                        "03:47  60 GB / 60 GB (100%)  [ALARM — producers blocked]\n"
-                        "\nRoot cause: 7-day message retention policy filled "
-                        "the entire 60 GB disk. No cleanup/TTL configured.\n"
-                    ),
-                    "messages": (
-                        "message_queue — Queue Depth\n"
-                        "orders.created  : 8 247 unacked (blocked)\n"
-                        "orders.fulfilled: 0 (consumers down)\n"
-                        "dlq.orders      : 8 247 messages\n"
-                    ),
-                },
             },
             "inventory_service": {
                 "status": "degraded",
-                "error_rate_pct": 67.0,
-                "response_time_ms": 15800.0,
-                "uptime_pct": 33.0,
+                "error_rate_pct": 72.0,
+                "response_time_ms": 8800.0,
+                "uptime_pct": 28.0,
                 "logs": (
-                    "[03:47:20] ERROR inventory_service: "
-                    "com.mysql.jdbc.exceptions.jdbc4.MySQLTransactionRollbackException: "
-                    "Deadlock found when trying to get lock; try restarting transaction\n"
-                    "[03:47:18] ERROR inventory_service: Transaction deadlock on "
-                    "inventory table — victim selected, rolled back\n"
-                    "[03:47:00] WARN  inventory_service: Lock wait timeout exceeded "
-                    "(innodb_lock_wait_timeout=50s) on inventory.stock table\n"
-                    "[03:45:00] INFO  reporting_job: Running nightly inventory audit — "
-                    "LOCK TABLES inventory.stock WRITE (will hold for ~30 min)\n"
-                    "[03:44:55] INFO  inventory_service: Attempting to UPDATE "
-                    "inventory.stock — waiting for table lock\n"
+                    "[03:12:43] ERROR inventory_service: Upstream api_gateway "
+                    "returning 503 (overloaded by DDoS)\n"
+                    "[03:12:40] WARN  inventory_service: 72% of requests timing out\n"
                 ),
-                "metrics": {
-                    "lock_wait": (
-                        "inventory_service — InnoDB Lock Waits\n"
-                        "03:44  0 / min\n"
-                        "03:45  3 / min  [reporting_job acquired LOCK TABLES]\n"
-                        "03:46  28 / min  [WARN]\n"
-                        "03:47  67 / min  [CRITICAL — deadlock storm]\n"
-                        "\nBlocking query: reporting_job holding LOCK TABLES "
-                        "inventory.stock WRITE since 03:45:00 (12 min)\n"
-                    ),
-                    "cpu": (
-                        "inventory_service — CPU\n"
-                        "Current: 8%  |  P95 (1h): 62%  |  Status: LOW (blocked on locks)\n"
-                    ),
-                },
             },
-            "notification_service": {
+            "waf_service": {
                 "status": "degraded",
                 "error_rate_pct": 100.0,
                 "response_time_ms": 0.0,
                 "uptime_pct": 0.0,
                 "logs": (
-                    "[03:47:20] ERROR notification_service: Failed to consume from "
-                    "message_queue — broker connection refused (queue blocked)\n"
-                    "[03:47:18] ERROR notification_service: RabbitMQ connection "
-                    "timeout — retrying (attempt 24/∞)\n"
-                    "[03:47:00] WARN  notification_service: 0 notifications sent "
-                    "in last 10 min (baseline: ~500 / min)\n"
-                ),
-            },
-            "checkout_service": {
-                "status": "degraded",
-                "error_rate_pct": 83.0,
-                "response_time_ms": 32000.0,
-                "uptime_pct": 17.0,
-                "logs": (
-                    "[03:47:20] ERROR checkout_service: order_service unavailable "
-                    "(CrashLoopBackOff)\n"
-                    "[03:47:18] ERROR checkout_service: Failed to reserve inventory — "
-                    "inventory_service timeout (15 800 ms)\n"
-                    "[03:47:10] ERROR checkout_service: Payment processed but order "
-                    "creation failed — requires manual reconciliation\n"
-                ),
-            },
-            "payment_service": {
-                "status": "healthy",
-                "error_rate_pct": 0.2,
-                "response_time_ms": 110.0,
-                "uptime_pct": 99.8,
-                "logs": (
-                    "[03:47:20] INFO  payment_service: Transaction processed "
-                    "successfully (order creation downstream failed)\n"
-                    "[03:47:18] INFO  payment_service: Health check OK\n"
-                ),
-            },
-            "api_gateway": {
-                "status": "degraded",
-                "error_rate_pct": 42.0,
-                "response_time_ms": 28000.0,
-                "uptime_pct": 58.0,
-                "logs": (
-                    "[03:47:20] ERROR api_gateway: Upstream checkout_service "
-                    "timeout — returning 504\n"
-                    "[03:47:15] WARN  api_gateway: Circuit breaker OPEN for "
-                    "checkout_service\n"
+                    "[03:12:43] INFO  waf: No Web ACL configured for api_gateway\n"
+                    "[03:12:43] INFO  waf: AWS WAFv2 available but not deployed\n"
                 ),
             },
         },
         "root_causes": [
-            "message_queue_disk_full",
-            "order_service_memory_leak",
-            "inventory_db_deadlock",
+            "waf_not_configured",
+            "autoscaling_unbounded",
+            "api_gateway_no_rate_limit",
         ],
         "correct_fixes": {
-            "message_queue_disk_full": {
-                "target": "message_queue",
-                "affected_services": ["notification_service"],
+            "waf_not_configured": {
+                "target": "waf_service",
+                "affected_services": ["api_gateway", "order_service", "inventory_service"],
                 "fix_types": [
-                    "clear_queue",
-                    "purge_messages",
-                    "increase_capacity",
-                    "free_disk",
-                    "adjust_config",
-                    "clear_dlq",
+                    "write_terraform",
+                    "deploy_waf",
+                    "create_waf_rule",
+                    "block_ips",
+                    "apply_fix",
+                    "create_web_acl",
+                    "deploy",
                 ],
                 "config_keys": [
-                    "message_ttl",
-                    "retention_days",
-                    "disk_free_limit",
-                    "max_disk",
+                    "aws_wafv2_web_acl",
+                    "aws_wafv2_ip_set",
+                    "203.0.113.0/24",
+                    "198.51.100.0/24",
+                    "192.0.2.0/24",
+                    "block",
+                    "waf_rule",
+                    "ip_block",
+                    "web_acl",
+                    "terraform",
                 ],
             },
-            "order_service_memory_leak": {
-                "target": "order_service",
-                "affected_services": ["checkout_service"],
-                "fix_types": [
-                    "rollback",
-                    "restart_service",
-                    "adjust_config",
-                    "fix_memory_leak",
-                    "revert_deployment",
-                ],
-                "config_keys": [
-                    "deployment_version",
-                    "heap_size",
-                    "cache_eviction",
-                    "version",
-                ],
-            },
-            "inventory_db_deadlock": {
-                "target": "inventory_service",
+            "autoscaling_unbounded": {
+                "target": "auto_scaling",
                 "affected_services": [],
                 "fix_types": [
-                    "kill_query",
-                    "stop_reporting_job",
                     "adjust_config",
-                    "fix_deadlock",
-                    "restart_service",
+                    "update_scaling_policy",
+                    "set_max_capacity",
+                    "cap_scaling",
+                    "terminate_excess",
+                    "scale_in",
                 ],
                 "config_keys": [
-                    "lock_timeout",
-                    "reporting_job",
-                    "innodb_lock_wait_timeout",
-                    "table_lock",
+                    "max_capacity",
+                    "max_size",
+                    "desired_capacity",
+                    "scaling_policy",
+                    "cooldown",
+                    "terminate",
+                ],
+            },
+            "api_gateway_no_rate_limit": {
+                "target": "api_gateway",
+                "affected_services": [],
+                "fix_types": [
+                    "enable_rate_limiting",
+                    "apply_fix",
+                    "adjust_config",
+                    "set_throttle",
+                    "configure_throttling",
+                    "add_usage_plan",
+                ],
+                "config_keys": [
+                    "rate_limit",
+                    "throttle",
+                    "burst_limit",
+                    "quota",
+                    "usage_plan",
+                    "requests_per_second",
                 ],
             },
         },
-        "verify_services": ["order_service", "message_queue", "inventory_service"],
+        "verify_services": ["api_gateway", "waf_service", "order_service"],
         "post_fix_status": {
-            "order_service": {
+            "api_gateway": {
                 "status": "healthy",
                 "error_rate_pct": 0.3,
                 "response_time_ms": 145.0,
                 "uptime_pct": 99.8,
             },
-            "message_queue": {
+            "waf_service": {
                 "status": "healthy",
                 "error_rate_pct": 0.0,
-                "response_time_ms": 2.1,
+                "response_time_ms": 2.0,
                 "uptime_pct": 100.0,
+            },
+            "auto_scaling": {
+                "status": "healthy",
+                "error_rate_pct": 0.0,
+                "response_time_ms": 5.0,
+                "uptime_pct": 100.0,
+            },
+            "order_service": {
+                "status": "healthy",
+                "error_rate_pct": 0.4,
+                "response_time_ms": 210.0,
+                "uptime_pct": 99.6,
             },
             "inventory_service": {
                 "status": "healthy",
                 "error_rate_pct": 0.1,
                 "response_time_ms": 85.0,
-                "uptime_pct": 99.9,
-            },
-            "notification_service": {
-                "status": "healthy",
-                "error_rate_pct": 0.0,
-                "response_time_ms": 55.0,
-                "uptime_pct": 100.0,
-            },
-            "checkout_service": {
-                "status": "healthy",
-                "error_rate_pct": 0.2,
-                "response_time_ms": 320.0,
                 "uptime_pct": 99.9,
             },
         },
@@ -665,14 +747,17 @@ SCENARIOS: Dict[str, dict] = {
     },
 }
 
-
 # ---------------------------------------------------------------------------
-# Available actions reminder (shown in every observation)
+# Available actions (shown to agent each step)
 # ---------------------------------------------------------------------------
 AVAILABLE_ACTIONS = [
     "view_logs",
     "view_metrics",
+    "list_resources",
+    "run_cli",
+    "view_billing",
     "apply_fix",
+    "write_terraform",
     "verify",
     "escalate",
 ]
@@ -680,14 +765,14 @@ AVAILABLE_ACTIONS = [
 
 class IncidentResponseEnvironment(Environment):
     """
-    OpenEnv Environment for AIOps Incident Response.
+    OpenEnv Environment for CloudOps Intelligence (AIOps + FinOps + Security).
 
-    The agent plays the role of an on-call engineer. Each episode presents
-    a realistic production incident with one or more root causes. The agent
-    must investigate (via logs/metrics), apply the correct fix(es), and
-    verify service recovery — all within a step budget.
+    The agent plays the role of a cloud operations engineer. Each episode
+    presents a real cloud incident combining one or more of: service outage,
+    cost anomaly, and security vulnerability. The agent must investigate,
+    remediate, and verify recovery — all within a step budget.
 
-    Thread-safe: all mutable state is instance-level; no global shared state.
+    Thread-safe: all mutable state is instance-level.
     """
 
     SUPPORTS_CONCURRENT_SESSIONS = True
@@ -700,7 +785,7 @@ class IncidentResponseEnvironment(Environment):
         self._fixes_applied: List[str] = []
         self._services_fixed: List[str] = []
         self._actions_log: List[str] = []
-        self._queries_seen: List[str] = []  # for redundancy detection
+        self._queries_seen: List[str] = []
         self._step_count: int = 0
         self._max_steps: int = 15
         self._cumulative_reward: float = 0.0
@@ -711,16 +796,12 @@ class IncidentResponseEnvironment(Environment):
     # ── OpenEnv interface ─────────────────────────────────────────────────
 
     def reset(self, seed: int = 42, task: str = "easy") -> IncidentObservation:  # type: ignore[override]
-        """Initialise a fresh episode for the given task difficulty."""
         if task not in SCENARIOS:
-            task = "medium"  # safe fallback
+            task = "medium"
 
         self._task = task
         self._scenario = SCENARIOS[task]
-        self._services = {
-            name: dict(data)
-            for name, data in self._scenario["services"].items()
-        }
+        self._services = {k: dict(v) for k, v in self._scenario["services"].items()}
         self._root_causes_identified = []
         self._fixes_applied = []
         self._services_fixed = []
@@ -737,8 +818,9 @@ class IncidentResponseEnvironment(Environment):
             action_output=(
                 "=== INCIDENT OPENED ===\n"
                 + self._scenario["initial_alert"]
-                + "\nBegin investigation. Use view_logs and view_metrics to "
-                "identify root causes, then apply_fix to remediate."
+                + "\nBegin investigation. Use view_logs, view_metrics, list_resources, "
+                "run_cli, and view_billing to identify root causes. "
+                "Then apply_fix or write_terraform to remediate, and verify to confirm."
             ),
             reward=0.0,
         )
@@ -746,13 +828,13 @@ class IncidentResponseEnvironment(Environment):
     def step(self, action: IncidentAction) -> IncidentObservation:  # type: ignore[override]
         if self._done:
             return self._make_observation(
-                action_output="Episode already complete. Call reset() to start a new episode.",
+                action_output="Episode complete. Call reset() to start a new episode.",
                 reward=0.0,
             )
 
         self._step_count += 1
         action_type = (action.action_type or "").lower().strip()
-        target = (action.target or "").lower().strip()
+        target = (action.target or "").lower().strip().replace("-", "_").replace(" ", "_")
         params = action.parameters or {}
 
         reward = 0.0
@@ -760,31 +842,38 @@ class IncidentResponseEnvironment(Environment):
 
         if action_type == "view_logs":
             output, reward = self._handle_view_logs(target)
-
         elif action_type == "view_metrics":
-            metric = (params.get("metric") or params.get("name") or "").lower().strip()
+            metric = (params.get("metric") or "").lower().strip()
             output, reward = self._handle_view_metrics(target, metric)
-
-        elif action_type == "apply_fix":
+        elif action_type == "list_resources":
+            resource_type = (params.get("type") or target or "ec2").lower().strip()
+            output, reward = self._handle_list_resources(resource_type, params)
+        elif action_type == "run_cli":
+            command = (params.get("command") or target or "").lower().strip()
+            output, reward = self._handle_run_cli(command)
+        elif action_type == "view_billing":
+            period = (params.get("period") or "month").lower().strip()
+            output, reward = self._handle_view_billing(target, period)
+        elif action_type in ("apply_fix", "terminate", "update_policy", "block_ips"):
             fix_type = (
-                params.get("fix_type") or params.get("action") or ""
+                params.get("fix_type") or params.get("action") or action_type
             ).lower().strip()
             config_key = (params.get("config_key") or params.get("key") or "").lower().strip()
             config_value = params.get("config_value") or params.get("value") or ""
             output, reward = self._handle_apply_fix(target, fix_type, config_key, config_value)
-
+        elif action_type == "write_terraform":
+            resource_type = (params.get("resource_type") or target or "").lower().strip()
+            config = params.get("config") or params.get("terraform") or ""
+            output, reward = self._handle_write_terraform(resource_type, config)
         elif action_type == "verify":
             output, reward = self._handle_verify(target)
-
         elif action_type == "escalate":
             output, reward = self._handle_escalate()
-
         else:
             output = (
                 f"Unknown action_type '{action_type}'. "
                 f"Valid types: {AVAILABLE_ACTIONS}"
             )
-            reward = 0.0
 
         self._actions_log.append(
             f"step={self._step_count} type={action_type} "
@@ -792,20 +881,19 @@ class IncidentResponseEnvironment(Environment):
         )
         self._cumulative_reward += reward
 
-        # Check episode termination
         if self._escalated:
             self._done = True
         elif self._step_count >= self._max_steps:
             self._done = True
             output += (
-                "\n\n⏰ STEP BUDGET EXHAUSTED — Incident automatically escalated. "
-                "Ensure all root causes are fixed before step limit."
+                "\n\n⏰ STEP BUDGET EXHAUSTED — incident auto-escalated. "
+                "Identify all root causes before step limit."
             )
         elif self._all_resolved():
             self._done = True
             output += (
-                "\n\n✅ ALL SERVICES HEALTHY — Incident resolved successfully. "
-                "Post-mortem scheduled for next business day."
+                "\n\n✅ ALL ISSUES RESOLVED — incident closed. "
+                "Post-mortem scheduled."
             )
 
         return self._make_observation(action_output=output, reward=min(1.0, max(0.0, reward)))
@@ -820,9 +908,7 @@ class IncidentResponseEnvironment(Environment):
             actions_log=list(self._actions_log),
             root_causes_identified=list(self._root_causes_identified),
             fixes_applied=list(self._fixes_applied),
-            services_status={
-                name: svc["status"] for name, svc in self._services.items()
-            },
+            services_status={n: s["status"] for n, s in self._services.items()},
             resolved=self._all_resolved(),
             escalated=self._escalated,
             cumulative_reward=round(self._cumulative_reward, 4),
@@ -831,230 +917,313 @@ class IncidentResponseEnvironment(Environment):
     # ── Action handlers ───────────────────────────────────────────────────
 
     def _handle_view_logs(self, target: str) -> Tuple[str, float]:
+        svc = self._find_service(target)
+        if svc is None:
+            return self._unknown_target(target), 0.0
         query_key = f"logs:{target}"
-        if target not in self._services:
-            return (
-                f"Service '{target}' not found. "
-                f"Available: {list(self._services.keys())}",
-                0.0,
-            )
-
-        reward = 0.0
-        if query_key in self._queries_seen:
-            reward = -W_REDUNDANT
-            suffix = "\n[Repeated query — no new information available]"
-        else:
+        reward = -W_REDUNDANT if query_key in self._queries_seen else 0.0
+        if query_key not in self._queries_seen:
             self._queries_seen.append(query_key)
-            suffix = ""
-
-        svc = self._services[target]
-        logs = svc.get("logs", f"[No log data available for {target}]")
-        output = f"=== LOGS: {target} ===\n{logs}{suffix}"
-        return output, reward
+        logs = svc.get("logs", f"[No logs for {target}]")
+        suffix = "\n[Repeated query]" if reward < 0 else ""
+        return f"=== LOGS: {target} ===\n{logs}{suffix}", reward
 
     def _handle_view_metrics(self, target: str, metric: str) -> Tuple[str, float]:
-        if target not in self._services:
-            return (
-                f"Service '{target}' not found. "
-                f"Available: {list(self._services.keys())}",
-                0.0,
-            )
-
-        svc = self._services[target]
+        svc = self._find_service(target)
+        if svc is None:
+            return self._unknown_target(target), 0.0
         metrics = svc.get("metrics", {})
-
         if not metric:
-            available = list(metrics.keys()) if metrics else ["cpu", "memory", "connections"]
             return (
-                f"Specify a metric. Available for {target}: {available}",
+                f"Specify metric. Available for {target}: {list(metrics.keys()) or ['cpu','memory','cost']}",
                 0.0,
             )
-
         query_key = f"metrics:{target}:{metric}"
-        reward = 0.0
-        if query_key in self._queries_seen:
-            reward = -W_REDUNDANT
-            suffix = "\n[Repeated metric query — no new information]"
-        else:
+        reward = -W_REDUNDANT if query_key in self._queries_seen else 0.0
+        if query_key not in self._queries_seen:
             self._queries_seen.append(query_key)
-            suffix = ""
+        matched = next((v for k, v in metrics.items() if metric in k or k in metric), None)
+        if matched:
+            suffix = "\n[Repeated query]" if reward < 0 else ""
+            return f"=== METRICS: {target}/{metric} ===\n{matched}{suffix}", reward
+        return f"Metric '{metric}' not found for {target}. Available: {list(metrics.keys())}", 0.0
 
-        # Fuzzy metric lookup
-        matched_key = None
-        for k in metrics:
-            if metric in k or k in metric:
-                matched_key = k
-                break
+    def _handle_list_resources(self, resource_type: str, params: dict) -> Tuple[str, float]:
+        # Try to find relevant service with list data
+        for svc_name, svc in self._services.items():
+            if resource_type in svc_name or svc_name in resource_type:
+                metrics = svc.get("metrics", {})
+                for k, v in metrics.items():
+                    if resource_type in k or "utilization" in k or "instances" in k:
+                        return f"=== LIST RESOURCES: {resource_type} ===\n{v}", 0.0
+                if "logs" in svc:
+                    return f"=== LIST RESOURCES: {resource_type} ===\n{svc['logs']}", 0.0
+        # Generic fallback
+        return (
+            f"=== LIST RESOURCES: {resource_type} ===\n"
+            f"Use run_cli with 'aws {resource_type} describe-...' for detailed output.\n"
+            f"Available services with resource data: {list(self._services.keys())}",
+            0.0,
+        )
 
-        if matched_key:
-            output = f"=== METRICS: {target} / {matched_key} ===\n{metrics[matched_key]}{suffix}"
-        else:
-            output = (
-                f"Metric '{metric}' not found for {target}. "
-                f"Available: {list(metrics.keys())}"
+    def _handle_run_cli(self, command: str) -> Tuple[str, float]:
+        # Search all services for a matching CLI output
+        for svc_name, svc in self._services.items():
+            cli_outputs = svc.get("cli_outputs", {})
+            for cmd_key, output in cli_outputs.items():
+                if cmd_key.lower() in command or any(
+                    word in command for word in cmd_key.lower().split()
+                    if len(word) > 4
+                ):
+                    query_key = f"cli:{cmd_key}"
+                    reward = -W_REDUNDANT if query_key in self._queries_seen else 0.0
+                    if query_key not in self._queries_seen:
+                        self._queries_seen.append(query_key)
+                    return f"$ {command}\n\n{output}", reward
+
+        # Try metric-based CLI simulation
+        for svc_name, svc in self._services.items():
+            if any(word in command for word in svc_name.split("_") if len(word) > 3):
+                metrics = svc.get("metrics", {})
+                if metrics:
+                    first_metric = next(iter(metrics.values()))
+                    return f"$ {command}\n\n{first_metric}", 0.0
+
+        return (
+            f"$ {command}\n\nCommand executed. "
+            f"For pre-defined output, try commands like:\n"
+            f"  aws ec2 describe-instances\n"
+            f"  aws s3api get-bucket-acl --bucket <name>\n"
+            f"  aws iam get-role-policy --role-name <role>\n"
+            f"  aws wafv2 list-web-acls\n"
+            f"  aws vpc get-flow-logs\n"
+            f"  aws autoscaling describe-auto-scaling-groups",
+            0.0,
+        )
+
+    def _handle_view_billing(self, target: str, period: str) -> Tuple[str, float]:
+        # Search for billing/cost metrics
+        for svc_name, svc in self._services.items():
+            if "billing" in svc_name or "cost" in svc_name:
+                metrics = svc.get("metrics", {})
+                for k, v in metrics.items():
+                    if any(w in k for w in ("cost", "billing", "ec2", "spend")):
+                        return f"=== BILLING REPORT ({period}) ===\n{v}", 0.0
+                logs = svc.get("logs", "")
+                if logs:
+                    return f"=== BILLING LOGS ===\n{logs}", 0.0
+        # Search auto_scaling for cost data (hard task)
+        for svc_name, svc in self._services.items():
+            metrics = svc.get("metrics", {})
+            for k, v in metrics.items():
+                if "cost" in k:
+                    return f"=== BILLING REPORT ({period}) ===\n{v}", 0.0
+        return (
+            f"=== BILLING REPORT ({period}) ===\n"
+            f"No cost data available yet. Use run_cli('aws ce get-cost-and-usage ...') "
+            f"or view_metrics(billing_dashboard, ec2_cost).",
+            0.0,
+        )
+
+    def _handle_write_terraform(self, resource_type: str, config: str) -> Tuple[str, float]:
+        """
+        Grades Terraform submissions for the DDoS WAF task.
+        Checks for presence of correct resource types and malicious CIDRs.
+        """
+        combined = (resource_type + " " + config).lower()
+        correct_fixes = self._scenario.get("correct_fixes", {})
+
+        for rc_id, fix_def in correct_fixes.items():
+            if rc_id in self._fixes_applied:
+                continue
+            config_keys = [k.lower() for k in fix_def.get("config_keys", [])]
+            fix_types = [f.lower() for f in fix_def.get("fix_types", [])]
+
+            tf_matches = any(k in combined for k in config_keys)
+            # Recognise Terraform submissions: any AWS resource type, 'terraform' keyword,
+            # or a known fix_type in the combined text
+            type_matches = (
+                any(f in combined for f in fix_types)
+                or "terraform" in combined
+                or "aws_" in resource_type   # AWS Terraform resource type prefix
+                or "aws_" in combined
             )
 
-        return output, reward
+            target_matches = (
+                fix_def["target"] in ("waf_service",)
+                or resource_type in fix_def.get("config_keys", [])
+                or any(k in resource_type for k in config_keys)
+            )
+
+            if tf_matches and type_matches and target_matches:
+                self._fixes_applied.append(rc_id)
+                if rc_id not in self._root_causes_identified:
+                    self._root_causes_identified.append(rc_id)
+                self._services_fixed.append(fix_def["target"])
+                reward = W_ROOT_CAUSE + W_FIX_APPLIED
+                return (
+                    f"✅ TERRAFORM VALIDATED & APPLIED\n"
+                    f"Resource: {resource_type or 'aws_wafv2_web_acl'}\n"
+                    f"Root cause resolved: {rc_id.replace('_', ' ')}\n"
+                    f"WAF rule deployed and attached to api_gateway.\n"
+                    f"Attack traffic from 203.0.113.0/24, 198.51.100.0/24, "
+                    f"192.0.2.0/24 is now BLOCKED.\n"
+                    f"Reward: +{reward:.2f}\n"
+                    f"Next: verify(api_gateway) to confirm attack mitigated."
+                ), reward
+
+        # Didn't match — give feedback
+        return (
+            "⚠️  Terraform submitted but does not address a remaining root cause.\n"
+            "Hints:\n"
+            "  - Use resource type: aws_wafv2_web_acl + aws_wafv2_ip_set\n"
+            "  - Include CIDRs: 203.0.113.0/24, 198.51.100.0/24, 192.0.2.0/24\n"
+            "  - Set action: block\n"
+            "Example config key: resource_type=aws_wafv2_web_acl, "
+            "config='{ip_set_cidrs: [203.0.113.0/24, ...], action: block}'"
+        ), -W_WRONG_FIX
 
     def _handle_apply_fix(
         self, target: str, fix_type: str, config_key: str, config_value: str
     ) -> Tuple[str, float]:
-        if target not in self._services:
-            return (
-                f"Service '{target}' not found. "
-                f"Available: {list(self._services.keys())}",
-                -W_WRONG_FIX,
-            )
-
-        correct_fixes = self._scenario["correct_fixes"]
-        reward = 0.0
-        output = ""
+        correct_fixes = self._scenario.get("correct_fixes", {})
 
         for rc_id, fix_def in correct_fixes.items():
             if rc_id in self._fixes_applied:
-                continue  # already fixed
-
-            # Check if this fix targets the correct service
-            if target != fix_def["target"]:
                 continue
 
-            # Check if fix_type matches (with fuzzy matching)
-            fix_matches = any(
-                ft in fix_type or fix_type in ft
-                for ft in fix_def["fix_types"]
-            )
-            # Also accept if config_key matches a known key
-            config_matches = any(
-                ck in config_key or config_key in ck
-                for ck in fix_def.get("config_keys", [])
-            ) if config_key else False
+            svc_target = fix_def["target"].replace("-", "_").replace(" ", "_")
+            if target and target != svc_target and not any(
+                t in target for t in svc_target.split("_")
+            ):
+                continue
 
-            if fix_matches or config_matches:
-                # Correct fix applied — record it, but wait for explicit verify
-                # to update service statuses (so the agent gets verify credit)
+            fix_types_lower = [f.lower() for f in fix_def["fix_types"]]
+            config_keys_lower = [k.lower() for k in fix_def.get("config_keys", [])]
+
+            combined_input = f"{fix_type} {config_key} {config_value}".lower()
+            fix_match = any(f in combined_input or combined_input in f for f in fix_types_lower)
+            key_match = any(k in combined_input for k in config_keys_lower) if config_keys_lower else False
+
+            if fix_match or key_match:
                 self._fixes_applied.append(rc_id)
                 if rc_id not in self._root_causes_identified:
                     self._root_causes_identified.append(rc_id)
-
-                self._services_fixed.append(target)
+                self._services_fixed.append(svc_target)
                 reward = W_ROOT_CAUSE + W_FIX_APPLIED
-
-                fix_description = (
-                    f"adjust {config_key}={config_value}" if config_key
-                    else f"{fix_type}"
+                fix_desc = (
+                    f"adjust {config_key}={config_value}" if config_key else fix_type
                 )
-                output = (
-                    f"✅ FIX APPLIED: {fix_description} on {target}\n"
-                    f"Root cause identified: {rc_id.replace('_', ' ')}\n"
-                    f"Service status will update once you verify health.\n"
-                    f"Reward: +{reward:.2f} (root cause credit + fix credit)\n"
-                    f"\nNext: use verify({target!r}) to confirm the fix worked."
-                )
-                return output, reward
+                return (
+                    f"✅ FIX APPLIED: {fix_desc} on {svc_target}\n"
+                    f"Root cause resolved: {rc_id.replace('_', ' ')}\n"
+                    f"Reward: +{reward:.2f}\n"
+                    f"Next: verify({svc_target!r}) to confirm."
+                ), reward
 
-        # Fix applied to wrong service or wrong type
-        already_fixed_ids = [
-            rc for rc in correct_fixes if rc in self._fixes_applied
-        ]
-        remaining = [
-            rc for rc in correct_fixes if rc not in self._fixes_applied
-        ]
-        output = (
-            f"⚠️  Fix '{fix_type}' on '{target}' did not address any remaining "
-            f"root cause.\n"
-            f"Remaining root causes to find: {len(remaining)}\n"
-            f"Hint: continue investigating logs/metrics to identify what needs fixing."
-        )
-        return output, -W_WRONG_FIX
+        return (
+            f"⚠️  Fix '{fix_type}' on '{target}' did not match any remaining root cause.\n"
+            f"Continue investigating logs/metrics/billing to identify what to fix."
+        ), -W_WRONG_FIX
 
     def _handle_verify(self, target: str) -> Tuple[str, float]:
-        if target not in self._services:
-            return (
-                f"Service '{target}' not found. "
-                f"Available: {list(self._services.keys())}",
-                0.0,
-            )
+        svc = self._find_service(target)
+        if svc is None:
+            return self._unknown_target(target), 0.0
 
-        svc = self._services[target]
-        reward = 0.0
+        post_fix = self._scenario.get("post_fix_status", {})
+        correct_fixes = self._scenario.get("correct_fixes", {})
         verify_key = f"verify:{target}"
 
-        # Check whether a fixed root cause directly targets or affects this service.
-        post_fix = self._scenario.get("post_fix_status", {})
-        cause_was_fixed = any(
+        cause_fixed = any(
             rc_id in self._fixes_applied
             and (
-                self._scenario["correct_fixes"][rc_id]["target"] == target
-                or target in self._scenario["correct_fixes"][rc_id].get("affected_services", [])
+                correct_fixes[rc_id]["target"].replace("-", "_") == target
+                or target in [
+                    s.replace("-", "_")
+                    for s in correct_fixes[rc_id].get("affected_services", [])
+                ]
             )
-            for rc_id in self._scenario["correct_fixes"]
+            for rc_id in correct_fixes
         )
 
-        if cause_was_fixed and target in post_fix:
+        if cause_fixed and target in post_fix:
             svc.update(post_fix[target])
+            # Cascade-heal downstream services
+            for downstream, ds_post in post_fix.items():
+                if downstream != target:
+                    ds = self._services.get(downstream, {})
+                    if ds.get("status") in ("degraded", "down"):
+                        self._services[downstream].update(ds_post)
 
         status = svc.get("status", "unknown")
+        reward = 0.0
 
         if status == "healthy":
             if verify_key not in self._queries_seen:
                 reward = W_VERIFY
                 self._queries_seen.append(verify_key)
-
-            output = (
-                f"✅ HEALTH CHECK: {target}\n"
+            return (
+                f"✅ HEALTH CHECK PASSED: {target}\n"
                 f"Status         : HEALTHY\n"
                 f"Error rate     : {svc['error_rate_pct']:.1f}%\n"
                 f"Response time  : {svc['response_time_ms']:.0f} ms\n"
-                f"Uptime         : {svc['uptime_pct']:.1f}%\n"
-                f"Verdict        : Service is operating normally."
-            )
-            if reward > 0:
-                output += f"\nReward: +{reward:.2f} (verification credit)"
+                f"Uptime         : {svc['uptime_pct']:.1f}%"
+                + (f"\nReward: +{reward:.2f}" if reward > 0 else "")
+            ), reward
         else:
-            output = (
-                f"⚠️  HEALTH CHECK: {target}\n"
+            return (
+                f"⚠️  HEALTH CHECK FAILED: {target}\n"
                 f"Status         : {status.upper()}\n"
                 f"Error rate     : {svc['error_rate_pct']:.1f}%\n"
                 f"Response time  : {svc['response_time_ms']:.0f} ms\n"
-                f"Uptime         : {svc['uptime_pct']:.1f}%\n"
-                f"Verdict        : Service still degraded — apply correct fix first."
-            )
-
-        return output, reward
+                f"Apply the correct fix first, then verify again."
+            ), 0.0
 
     def _handle_escalate(self) -> Tuple[str, float]:
         self._escalated = True
         fixed = len(self._fixes_applied)
         total = len(self._scenario["root_causes"])
-        partial_score = fixed / max(1, total) * 0.5
-        output = (
-            f"📞 ESCALATED to senior on-call engineer.\n"
-            f"Root causes fixed before escalation: {fixed} / {total}\n"
-            f"Partial credit awarded: {partial_score:.2f}\n"
-            "Episode ended."
-        )
-        return output, partial_score
+        partial = fixed / max(1, total) * 0.5
+        return (
+            f"📞 ESCALATED — {fixed}/{total} root causes fixed before escalation.\n"
+            f"Partial credit: {partial:.2f}"
+        ), partial
 
     # ── Helpers ───────────────────────────────────────────────────────────
 
+    def _find_service(self, target: str) -> Optional[dict]:
+        if target in self._services:
+            return self._services[target]
+        # Fuzzy: try partial match
+        for name, svc in self._services.items():
+            if target in name or name in target:
+                return svc
+        return None
+
+    def _unknown_target(self, target: str) -> str:
+        return (
+            f"Resource '{target}' not found. "
+            f"Available: {list(self._services.keys())}"
+        )
+
     def _all_resolved(self) -> bool:
-        """True when every root cause is fixed and all verify_services are healthy."""
         root_causes = set(self._scenario["root_causes"])
         if not root_causes.issubset(set(self._fixes_applied)):
             return False
-        verify_svcs = self._scenario.get("verify_services", [])
         return all(
             self._services.get(s, {}).get("status") == "healthy"
-            for s in verify_svcs
+            for s in self._scenario.get("verify_services", [])
         )
 
     def _make_observation(self, action_output: str, reward: float) -> IncidentObservation:
-        healthy = sum(
-            1 for s in self._services.values() if s.get("status") == "healthy"
-        )
+        healthy = sum(1 for s in self._services.values() if s.get("status") == "healthy")
         total = len(self._services)
         rc_found = len(self._root_causes_identified)
         rc_total = len(self._scenario.get("root_causes", []))
+
+        if self._all_resolved():
+            reward = max(reward, W_COMPLETION)
 
         services_list = [
             ServiceHealth(
@@ -1067,17 +1236,14 @@ class IncidentResponseEnvironment(Environment):
             for name, svc in self._services.items()
         ]
 
-        # Completion bonus
-        if self._all_resolved():
-            reward = max(reward, W_COMPLETION)
-
-        # Clip to [0, 1] for the observation field (OpenEnv spec).
-        # Penalties contribute to cumulative_reward but are not surfaced as
-        # negative reward values in the observation to keep the reward field
-        # compliant with the [0, 1] range requirement.
-        clipped_reward = float(min(1.0, max(0.0, reward)))
-
-        situation = self._build_situation_report(healthy, total, rc_found, rc_total)
+        situation = (
+            f"=== STATUS — step {self._step_count}/{self._max_steps} ===\n"
+            f"Task    : {self._task.upper()} — {self._scenario.get('title', '')}\n"
+            f"Domain  : {self._scenario.get('domain', '')}\n"
+            f"Services: {healthy}/{total} healthy | "
+            f"Root causes: {rc_found}/{rc_total} resolved\n"
+            f"Resolved: {'YES ✅' if self._all_resolved() else 'NO ⏳'}\n"
+        )
 
         return IncidentObservation(
             situation_report=situation,
@@ -1088,26 +1254,6 @@ class IncidentResponseEnvironment(Environment):
             services_total=total,
             root_causes_found=rc_found,
             root_causes_total=rc_total,
-            reward=clipped_reward,
+            reward=float(min(1.0, max(0.0, reward))),
             done=self._done,
-        )
-
-    def _build_situation_report(
-        self, healthy: int, total: int, rc_found: int, rc_total: int
-    ) -> str:
-        degraded = [
-            name
-            for name, svc in self._services.items()
-            if svc.get("status") != "healthy"
-        ]
-        degraded_str = ", ".join(degraded) if degraded else "none"
-        return (
-            f"=== INCIDENT STATUS — step {self._step_count}/{self._max_steps} ===\n"
-            f"Task         : {self._task.upper()} — "
-            f"{self._scenario.get('title', '')}\n"
-            f"Services     : {healthy}/{total} healthy "
-            f"(degraded: {degraded_str})\n"
-            f"Root causes  : {rc_found}/{rc_total} identified and fixed\n"
-            f"Steps used   : {self._step_count}/{self._max_steps}\n"
-            f"Resolved     : {'YES ✅' if self._all_resolved() else 'NO ⏳'}\n"
         )

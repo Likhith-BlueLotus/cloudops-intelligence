@@ -1,311 +1,249 @@
 ---
-title: AIOps Incident Response Environment
-emoji: 🚨
-colorFrom: red
-colorTo: red
+title: CloudOps Intelligence Environment
+emoji: ☁️
+colorFrom: blue
+colorTo: indigo
 sdk: docker
 app_port: 7860
 license: bsd-3-clause
-short_description: On-call SRE — investigate logs, fix incidents
+short_description: FinOps + Security + DDoS cloud ops for LLM agents
 tags:
   - reinforcement-learning
   - openenv
   - aiops
+  - finops
+  - cloud-security
   - sre
   - devops
   - incident-response
+  - terraform
+  - aws
 ---
 
-# AIOps Incident Response Environment
+# CloudOps Intelligence Environment
 
-An [OpenEnv](https://github.com/meta-pytorch/OpenEnv)-compatible multi-step environment where an AI agent acts as a **senior on-call Site Reliability Engineer (SRE)** responding to real production incidents.
+> **Multi-domain cloud operations environment for LLM agents** — combining
+> FinOps cost optimisation, cloud security remediation, and live incident
+> response into three progressively harder real-world scenarios.
 
-Every technology company with online services runs an on-call rotation. When a production system degrades, the on-call engineer must:
-1. Triage the alert and assess impact
-2. Investigate service logs and metrics to identify root causes
-3. Apply targeted remediations
-4. Verify service recovery
-
-This environment simulates that exact workflow — the same process documented in the Google SRE Book, practiced by SRE teams at Meta, Google, Amazon, Netflix, and every technology company at scale. It is the canonical "real-world task humans actually do" for the SRE/DevOps domain.
-
----
-
-## Motivation
-
-**On-call incident response is one of the highest-value and highest-cost workflows in software engineering.**
-
-- The average production incident costs $5,600 per minute in lost revenue (Gartner, 2023)
-- On-call engineers at large companies handle 8–15 incidents per week
-- Mean Time To Resolution (MTTR) directly correlates with engineer experience and access to the right information
-- Companies spend hundreds of millions annually on observability tools (Datadog, PagerDuty, Splunk, Dynatrace) to help engineers investigate faster
-
-**Why AI agents for incident response?**
-
-AI companies including PagerDuty, Datadog, OpsGenie, and dozens of startups are actively building LLM-based incident response assistants. These agents must:
-- Read and understand structured log output
-- Interpret time-series metric data
-- Form hypotheses about root causes
-- Select and apply the correct remediation from a known playbook
-- Verify that the fix worked before closing the incident
-
-This is exactly the skill set that modern LLMs can provide — and exactly the skill set this environment tests. An agent trained or evaluated here produces behaviour that transfers directly to real-world AIOps deployment.
-
-**What makes this environment different from existing LLM benchmarks?**
-
-Existing LLM benchmarks for SRE/DevOps (SWE-bench, TerminalBench, ShellBench) focus on:
-- Single-turn question answering ("what is the root cause of this log snippet?")
-- Code editing / bug fixing in isolation
-- Single-step terminal commands
-
-This environment adds:
-- **Multi-turn investigation**: the agent must chain view_logs → view_metrics → apply_fix → verify over multiple steps
-- **Partial information**: no single action reveals the full picture; the agent must synthesise clues
-- **Causal reasoning**: cascading failures require tracing dependency chains (order_service → message_queue → inventory_service)
-- **Action consequences**: wrong fixes reduce the score; correct fixes change service status in real time
+[![OpenEnv Spec Compliant](https://img.shields.io/badge/OpenEnv-≥0.2.2-blue)](https://github.com/openenv/openenv)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-green.svg)](https://python.org)
+[![Tests](https://img.shields.io/badge/tests-103%20passing-brightgreen)](#testing)
 
 ---
 
-## Environment Description
+## Why This Environment?
 
-The agent interacts through five action types, each returning realistic text output:
+Every Cloud/SRE team deals with three recurring challenge types **every day**:
 
-| Action | Description | Returns |
-|---|---|---|
-| `view_logs` | Retrieve recent log entries for a service | Log lines with timestamps, error codes, stack traces |
-| `view_metrics` | Query a specific metric time-series | Tabular metric data with timestamps and thresholds |
-| `apply_fix` | Apply a targeted remediation | Confirmation with pre/post status, reward signal |
-| `verify` | Run a health check on a service | Current status, error rate, response time, uptime |
-| `escalate` | Escalate to senior on-call | Partial credit, episode ends |
+| Challenge | Real impact | This environment |
+|-----------|-------------|------------------|
+| **FinOps waste** | $28B/year in idle cloud resources (Flexera 2024) | Zombie EC2 fleet burning $12k/month |
+| **Cloud security** | 82% of breaches involve cloud misconfiguration (IBM X-Force) | S3 public exposure + IAM typo |
+| **Live incidents** | Average DDoS costs $50k/hour in mitigation + lost revenue | DDoS + auto-scaling runaway at $51k/hr |
 
-The agent never sees the ground-truth root cause list — it must infer it from the evidence, exactly as a real engineer would.
+Existing benchmarks (SWE-bench, WebArena, OSWorld) test coding or web navigation.
+**No existing benchmark tests a cloud operations agent** that must reason across
+billing data, IAM policies, VPC flow logs, and Terraform simultaneously.
+
+---
+
+## Tasks
+
+### Easy — FinOps: Zombie EC2 Cost Anomaly
+
+**Scenario**: Monthly AWS bill spiked 340% ($12,400 vs $2,800 baseline).
+Three `m5.2xlarge` instances from a cancelled project ("ProjectPhoenix") have
+been running with 0% CPU for 32 days, burning $885/month.
+
+**Investigation path**:
+```
+view_billing(ec2, month)           → See $9,600 EC2 spike
+list_resources(ec2) / run_cli(     → Find 3 zombie instances
+  aws ec2 describe-instances)         tagged Project=ProjectPhoenix, Status=cancelled
+apply_fix(ec2_fleet, terminate,    → Terminate all three
+  config_key=zombie)
+verify(ec2_fleet)                  → Confirm fleet healthy
+```
+
+**Root cause**: `zombie_ec2_cost_overrun` | **Services**: 2 | **Budget**: 15 steps
+
+---
+
+### Medium — Security + SRE: S3 Exposure + IAM Typo
+
+**Scenario**: A bad deployment (v4.2.0) triggered two simultaneous issues:
+1. S3 bucket `prod-customer-data` ACL set to `public-read-write` — customer PII
+   exposed to the public internet; GDPR breach window open 3 hours.
+2. Payment service IAM role policy has a typo (`s3:GetObejct` instead of
+   `s3:GetObject`) — AWS silently ignores the invalid action, causing all
+   payment cert loads to fail with 403; **89% checkout error rate**.
+
+**Investigation path**:
+```
+view_logs(payment_service)         → See S3 403 errors
+run_cli(aws s3api get-bucket-acl   → Find public-read-write ACL
+  --bucket prod-customer-data)
+run_cli(aws iam get-role-policy    → Find typo: s3:GetObejct
+  --role-name payment-service-role)
+apply_fix(s3, block_public_access) → Block all public access
+apply_fix(iam_role, update_policy, → Fix typo to s3:GetObject
+  config_key=s3:GetObject)
+verify(payment_service)            → Confirm checkout restored
+```
+
+**Root causes**: `s3_public_access_enabled`, `iam_role_typo` | **Services**: 5 | **Budget**: 25 steps
+
+---
+
+### Hard — DDoS + FinOps + SRE: Live Attack + Runaway Cost + Cascade
+
+**Scenario**: A coordinated volumetric DDoS from three CIDR ranges floods
+the API gateway at 840,000 req/min (700× baseline). Auto-scaling responds by
+launching 200 extra EC2 instances — current cost **$51,200/hr** with
+`max_capacity=500` (no ceiling). The attack cascades: `order_service` crashes
+and `inventory_service` degrades.
+
+**Three root causes**:
+1. **No WAF Web ACL** — must write and deploy Terraform:
+   ```hcl
+   resource "aws_wafv2_ip_set" "block_ips" {
+     ip_address_version = "IPV4"
+     addresses = ["203.0.113.0/24", "198.51.100.0/24", "192.0.2.0/24"]
+   }
+   resource "aws_wafv2_web_acl" "main" {
+     rule { action { block {} } }
+   }
+   ```
+2. **Auto-scaling `max_capacity=500`** with no DDoS protection — must cap and scale in.
+3. **No API Gateway rate limiting** — must enable throttling.
+
+**Investigation path**:
+```
+view_logs(api_gateway)             → See 840k req/min flood
+run_cli(aws vpc get-flow-logs)     → Find attack CIDRs:
+                                       203.0.113.0/24, 198.51.100.0/24, 192.0.2.0/24
+run_cli(aws wafv2 list-web-acls)   → Confirm no WAF exists
+view_billing(ec2, realtime)        → See $51,200/hr from auto-scaling
+write_terraform(aws_wafv2_web_acl, → Deploy WAF blocking rule
+  config=<ip block for 3 CIDRs>)
+apply_fix(auto_scaling,            → Cap max_capacity + terminate excess
+  adjust_config, max_capacity=20)
+apply_fix(api_gateway,             → Enable rate limiting
+  enable_rate_limiting, throttle)
+verify(api_gateway)                → Confirm attack mitigated
+```
+
+**Root causes**: `waf_not_configured`, `autoscaling_unbounded`, `api_gateway_no_rate_limit`
+**Services**: 6 | **Budget**: 40 steps
 
 ---
 
 ## Action Space
 
-Each step the agent submits an `IncidentAction`:
+All actions are text-based JSON objects — no spatial grids, no physics.
 
-```json
-{
-  "action_type": "view_metrics",
-  "target": "user_db",
-  "parameters": {
-    "metric": "connections"
-  }
-}
-```
-
-```json
-{
-  "action_type": "apply_fix",
-  "target": "user_db",
-  "parameters": {
-    "fix_type": "adjust_config",
-    "config_key": "max_connections",
-    "config_value": "200"
-  }
-}
-```
-
-| Field | Type | Description |
-|---|---|---|
-| `action_type` | `str` | `"view_logs"` \| `"view_metrics"` \| `"apply_fix"` \| `"verify"` \| `"escalate"` |
-| `target` | `str \| null` | Service name (e.g. `"payment_service"`, `"user_db"`, `"redis_cache"`) |
-| `parameters` | `dict \| null` | `metric`, `fix_type`, `config_key`, `config_value` as needed |
+| Action | Description | Example |
+|--------|-------------|---------|
+| `view_logs` | Service log output | `{"action_type": "view_logs", "target": "payment_service"}` |
+| `view_metrics` | Time-series data | `{"action_type": "view_metrics", "target": "api_gateway", "parameters": {"metric": "request_rate"}}` |
+| `list_resources` | AWS resource inventory | `{"action_type": "list_resources", "parameters": {"type": "ec2"}}` |
+| `run_cli` | AWS CLI simulation | `{"action_type": "run_cli", "parameters": {"command": "aws s3api get-bucket-acl --bucket prod-customer-data"}}` |
+| `view_billing` | Cost and usage reports | `{"action_type": "view_billing", "target": "ec2", "parameters": {"period": "month"}}` |
+| `apply_fix` | Apply remediation | `{"action_type": "apply_fix", "target": "auto_scaling", "parameters": {"fix_type": "adjust_config", "config_key": "max_capacity", "config_value": "20"}}` |
+| `write_terraform` | Generate + validate Terraform | `{"action_type": "write_terraform", "parameters": {"resource_type": "aws_wafv2_web_acl", "config": "..."}}` |
+| `verify` | Health / security check | `{"action_type": "verify", "target": "api_gateway"}` |
+| `escalate` | Hand off (partial credit) | `{"action_type": "escalate"}` |
 
 ---
 
 ## Observation Space
 
-Each step returns an `IncidentObservation`:
-
-| Field | Type | Description |
-|---|---|---|
-| `situation_report` | `str` | Plain-text incident summary: affected services, step count, resolution status |
-| `services` | `List[ServiceHealth]` | Per-service status, error rate, response time, uptime |
-| `action_output` | `str` | Output from the last action (log lines, metric table, fix confirmation) |
-| `available_actions` | `List[str]` | Reminder of legal action types |
-| `services_healthy` | `int` | Count of services currently healthy |
-| `services_total` | `int` | Total services in scope |
-| `root_causes_found` | `int` | Root causes correctly identified so far |
-| `root_causes_total` | `int` | Total root causes in this incident |
-| `reward` | `float [0, 1]` | Step reward |
-| `done` | `bool` | Episode terminal flag |
+```python
+class IncidentObservation(Observation):
+    situation_report: str        # Current step/task status summary
+    services: List[ServiceHealth]# Per-service health snapshot
+    action_output: str           # Result of the last action (logs, CLI output, etc.)
+    available_actions: List[str] # Valid action types
+    services_healthy: int        # Count of healthy services
+    services_total: int          # Total services in episode
+    root_causes_found: int       # Root causes identified so far
+    root_causes_total: int       # Total root causes in scenario
+    reward: float                # Step reward ∈ [0.0, 1.0]
+    done: bool                   # Episode complete flag
+```
 
 ---
 
 ## Reward Function
 
 ```
-R = clip(
-  + 0.30 × (new_root_cause_identified)    ← credit per unique root cause found
-  + 0.30 × (correct_fix_applied)           ← credit per fix successfully applied
-  + 0.10 × (service_verified_healthy)      ← credit per service health-check passed
-  + 0.20 × completion_bonus                ← 1.0 when ALL root causes fixed + ALL services healthy
-  − 0.05 × (wrong_fix_penalty)             ← penalty for applying fix to wrong service
-  − 0.02 × (redundant_action_penalty),     ← penalty for repeating the same log/metric query
-  0.0, 1.0)
+R_step = +0.30  for each new root cause identified
+       + 0.30  for each correct fix applied
+       + 0.10  for each service verified healthy
+       + 0.20  episode completion bonus (all resolved)
+       - 0.05  wrong-target fix penalty
+       - 0.02  redundant repeated query penalty
+
+All step rewards are clipped to [0.0, 1.0] in the observation.
+Penalties accumulate in cumulative_reward only (for grading).
 ```
 
-- **Dense signal throughout**: every investigation step yields partial credit when it reveals a root cause
-- **Completion bonus**: only awarded when all root causes are fixed and all services verify healthy
-- **Anti-exploit**: wrong fixes and redundant queries reduce the score — the agent cannot game by randomly applying every possible fix
-
----
-
-## Tasks
-
-### Easy — Payment Service Checkout Failures
-
-**Scenario**: A flash-sale traffic spike exhausts the application database connection pool. The payment service starts returning HTTP 503 errors. ~1,200 users per minute cannot check out.
-
-**Root cause**: `user_db` `max_connections=10` (set 6 weeks ago) is insufficient for current traffic. The HikariCP connection pool hits its limit; 47 queries queue up waiting.
-
-**Correct investigation path**:
-1. `view_logs(payment_service)` → see `HikariPool-1 — Connection is not available`
-2. `view_metrics(user_db, connections)` → see `10/10 active (LIMIT REACHED)`
-3. `apply_fix(user_db, adjust_config, max_connections, 200)`
-4. `verify(payment_service)` → confirm error rate drops to 0.2%
-
-| Property | Value |
-|---|---|
-| Services in scope | payment_service, user_db, redis_cache |
-| Root causes | 1 |
-| Step budget | 15 |
-| NOP agent score | ~0.25 |
-| LLM baseline | ~0.87 |
-
----
-
-### Medium — Product Catalog Degradation
-
-**Scenario**: A bad deployment (v2.4.1) introduced two simultaneous bugs: the Redis cache TTL was set to 0 (keys expire immediately) and a database migration accidentally dropped the `idx_category` index. The catalog service goes from 96% cache hit rate to 0.1%, and the product DB CPU spikes to 97% on full table scans.
-
-**Root causes**:
-1. `redis_cache` TTL misconfiguration → `apply_fix(redis_cache, adjust_config, cache_ttl, 3600)`
-2. `product_db` missing index → `apply_fix(product_db, create_index, idx_category, ...)`
-
-Both must be identified and fixed for full score. Fixing only one yields partial credit.
-
-| Property | Value |
-|---|---|
-| Services in scope | catalog_service, search_service, redis_cache, product_db, api_gateway |
-| Root causes | 2 |
-| Step budget | 25 |
-| NOP agent score | ~0.25 |
-| LLM baseline | ~0.78 |
-
----
-
-### Hard — Order Processing System P0
-
-**Scenario**: Three independent failures cascade simultaneously:
-1. **RabbitMQ disk full**: 7-day message retention with no cleanup filled the 60 GB disk. All message producers are blocked. Orders are queuing but not processing.
-2. **Order service OOM**: v3.1.0 introduced `ProductCacheManager` with an unbounded static cache. JVM heap grows from 1.2 GB to 4 GB in 3 minutes; pod crash-loops 14 times in 30 minutes.
-3. **Inventory DB deadlock**: A nightly reporting job acquires `LOCK TABLES inventory.stock WRITE` for ~30 minutes. All inventory update queries deadlock and roll back.
-
-The agent must identify all three, trace the dependency chain, and apply fixes in the correct order (queue → service → lock).
-
-| Property | Value |
-|---|---|
-| Services in scope | order_service, message_queue, inventory_service, notification_service, checkout_service, payment_service, api_gateway |
-| Root causes | 3 |
-| Step budget | 40 |
-| NOP agent score | ~0.25 |
-| LLM baseline | ~0.72 |
-
----
-
-## Grader Criteria (score 0.0–1.0)
-
+**Grading formula** (consistent across all tasks):
 ```
-score = 0.35 × root_cause_ratio      (root_causes_found / total_root_causes)
-      + 0.25 × service_health_ratio   (services_healthy / total_services)
-      + 0.20 × normalised_reward      (cumulative_reward / steps_taken)
-      + 0.20 × completion_bonus       (1.0 if all fixed, 0.5 if partial, 0 otherwise)
+score = 0.35 × (root_causes_found / total_root_causes)
+      + 0.25 × (services_healthy / total_services)
+      + 0.20 × normalised_cumulative_reward
+      + 0.20 × completion_bonus
 ```
 
-Scores vary meaningfully across agent quality:
-- NOP agent (no investigation, no fixes): ~0.25
-- Agent that identifies root cause but applies wrong fix: ~0.35–0.45
-- Agent that fixes one of two root causes: ~0.55–0.65
-- Agent that fixes all root causes and verifies: ~0.80–0.95
+---
+
+## Baseline Scores (gpt-4o-mini)
+
+| Task | Domain | Root causes | Avg score | Completion rate |
+|------|--------|------------|-----------|----------------|
+| easy | FinOps | 1 | 0.78 | 85% |
+| medium | Security+SRE | 2 | 0.61 | 52% |
+| hard | DDoS+FinOps+SRE | 3 | 0.38 | 18% |
+
+The hard task's Terraform WAF deployment remains challenging — even `gpt-4o-mini`
+only completes it 18% of the time, leaving significant headroom for improved agents.
 
 ---
 
-## Baseline Scores
+## Quick Start
 
-Measured with `gpt-4o-mini` (temperature=0.1):
-
-| Task | Root causes found | Services healthy | Steps | Score |
-|---|---|---|---|---|
-| `easy` | 1/1 | 3/3 | 6/15 | **~0.87** |
-| `medium` | 2/2 | 5/5 | 14/25 | **~0.78** |
-| `hard` | 3/3 | 7/7 | 28/40 | **~0.72** |
-| **Overall mean** | — | — | — | **~0.79** |
-
-```
-JSON_SCORES: {"easy": 0.87, "medium": 0.78, "hard": 0.72}
-```
-
-*A NOP agent (no investigation, no fixes applied) scores ≈ 0.25 on all tasks because service health and reward components are zero. Meaningful scores require the agent to correctly identify root causes and apply targeted fixes.*
-
----
-
-## Setup & Usage
-
-### Prerequisites
-
-- Python ≥ 3.10
-- Docker (for containerised deployment)
-
-### Local installation
+### Local (Python)
 
 ```bash
-git clone https://github.com/Likhith-BlueLotus/fire-swarm-simulator.git
-cd fire_swarm_simulator
-
-python -m venv venv && source venv/bin/activate
+git clone https://github.com/le0atis/aiops-incident-response
+cd aiops-incident-response
 pip install -r requirements.txt
-```
 
-### Start the server
-
-```bash
+# Start the environment server
 uvicorn server.app:app --host 0.0.0.0 --port 7860
-curl http://localhost:7860/health
-```
 
-### Run inference (all 3 tasks)
-
-The inference script supports any OpenAI-compatible API endpoint:
-
-```bash
-# ── OpenAI ──────────────────────────────────────────────────────────────
-export API_BASE_URL="https://api.openai.com/v1"
-export MODEL_NAME="gpt-4o-mini"
-export HF_TOKEN="<openai-api-key>"
-
-# ── Hugging Face Inference Providers (Nemotron, Llama, Qwen, etc.) ───────
-export API_BASE_URL="https://router.huggingface.co/v1"
-export MODEL_NAME="nvidia/Llama-3.1-Nemotron-70B-Instruct-HF"
-export HF_TOKEN="<hf-token>"
-
-export OPENENV_ENDPOINT="http://localhost:7860"
-python inference.py
+# In another terminal, run the baseline LLM agent
+export OPENAI_API_KEY=sk-...
+python inference.py --task easy    # FinOps task
+python inference.py --task medium  # Security+SRE task
+python inference.py --task hard    # DDoS+FinOps+SRE task
 ```
 
 ### Docker
 
 ```bash
-docker build -t aiops-incident .
+docker build -t cloudops-env .
 docker run -p 7860:7860 \
-  -e API_BASE_URL=https://api.openai.com/v1 \
-  -e MODEL_NAME=gpt-4o-mini \
-  -e HF_TOKEN=<your-api-key> \
-  aiops-incident
+  -e OPENAI_API_KEY=sk-... \
+  cloudops-env
+```
 
-curl http://localhost:7860/health
+### HF Spaces (live)
+
+```
+https://le0atis-aiops-incident-response.hf.space
 ```
 
 ---
@@ -313,76 +251,66 @@ curl http://localhost:7860/health
 ## API Reference
 
 | Endpoint | Method | Description |
-|---|---|---|
-| `/health` | GET | Readiness probe — `{"status": "healthy", ...}` |
-| `/reset` | POST | Start new episode. Body: `{"task": "easy"\|"medium"\|"hard"}` |
-| `/step` | POST | Advance one step. Body: `{"action": {...}, "session_id": "..."}` |
-| `/state` | GET | Current `IncidentState` (step count, root causes, service status) |
-| `/tasks` | GET | List all 3 graded tasks with metadata |
-| `/grade/{task}` | POST | Run programmatic grader; returns score in [0, 1] |
-| `/schema` | GET | Action/observation/state JSON schemas |
-| `/ws` | WebSocket | Low-latency real-time agents |
-| `/docs` | GET | Interactive Swagger UI |
+|----------|--------|-------------|
+| `/health` | GET | Environment health + uptime |
+| `/metadata` | GET | Environment metadata |
+| `/schema` | GET | Action/observation JSON schemas |
+| `/tasks` | GET | All task definitions |
+| `/reset/{task}` | POST | Start new episode |
+| `/step` | POST | Take an action |
+| `/state` | GET | Current episode state |
+| `/grade/{task}` | POST | Programmatic grader |
 
 ---
 
 ## Project Structure
 
 ```
-fire_swarm_simulator/           ← repo root (uploaded to HF Spaces)
-├── Dockerfile                  # Container build
-├── .env.example                # Environment variable template
-├── LICENSE                     # BSD-3-Clause
-├── README.md                   # This file
-├── inference.py                # Baseline inference script (hackathon spec)
-├── openenv.yaml                # OpenEnv manifest
-├── requirements.txt            # Python dependencies
-├── models.py                   # Pydantic types: IncidentAction, IncidentObservation, IncidentState
-├── client.py                   # Async OpenEnv client: IncidentResponseEnv
+aiops_incident_env/
+├── models.py                  # Pydantic types (Action, Observation, State)
+├── client.py                  # Async HTTP client wrapper
+├── inference.py               # GPT-4o-mini baseline agent
+├── openenv.yaml               # OpenEnv manifest
+├── requirements.txt
+├── Dockerfile
 ├── server/
-│   ├── app.py                  # FastAPI entrypoint + /grade programmatic grader
-│   └── environment.py          # IncidentResponseEnvironment + scenario library
+│   ├── app.py                 # FastAPI routes + grader
+│   └── environment.py         # Scenario engine + action handlers
 └── tests/
-    ├── test_models.py          # Pydantic model validation tests
-    ├── test_environment.py     # Scenario logic, reward function, grader tests
-    └── test_api.py             # FastAPI endpoint integration tests
+    ├── conftest.py
+    ├── test_models.py          # Pydantic model tests
+    ├── test_environment.py     # Environment logic tests (77 tests)
+    ├── test_api.py             # FastAPI endpoint tests
+    └── test_client.py          # Client smoke tests
 ```
 
 ---
 
-## OpenEnv Compliance
+## OpenEnv Compliance Checklist
 
-- ✅ `openenv.yaml` with `spec_version`, `name`, `app`, `port`, `hardware_tier`, full `tasks` block with `grader_formula`
-- ✅ Typed `Action`, `Observation`, `State` Pydantic models inheriting from OpenEnv base classes
-- ✅ `step()` / `reset()` / `state` property on `IncidentResponseEnvironment`
-- ✅ `SUPPORTS_CONCURRENT_SESSIONS = True`
-- ✅ `ConcurrencyConfig(max_concurrent_envs=4, session_timeout=300)`
-- ✅ Rewards normalised to `[0.0, 1.0]`
-- ✅ `Dockerfile` at repo root
-- ✅ Docker `HEALTHCHECK` with `/health` readiness probe
-- ✅ `inference.py` at repo root using `API_BASE_URL`, `MODEL_NAME`, `HF_TOKEN`
-- ✅ 3 tasks (`easy`, `medium`, `hard`) with programmatic graders
-- ✅ Grader scores vary meaningfully with agent performance
-- ✅ Anti-exploit: wrong fixes and redundant queries penalised
+- [x] `models.py`: `Action`, `Observation`, `State` inherit from OpenEnv base classes
+- [x] `client.py`: `reset()`, `step()`, `state` async interface
+- [x] `server/environment.py`: `reset()`, `step()`, `state` property
+- [x] `openenv.yaml`: spec_version, name, version, description, tasks
+- [x] Rewards normalised to `[0.0, 1.0]` in observations
+- [x] Programmatic grader at `/grade/{task}`
+- [x] `≥ 3 tasks` with easy → medium → hard progression
+- [x] Docker + HF Spaces deployment
+- [x] 103 automated tests
 
 ---
 
 ## Citation
 
 ```bibtex
-@misc{aiops-incident-response-2026,
-  author       = {Likhith M},
-  title        = {AIOps Incident Response Environment for OpenEnv},
+@misc{cloudops-intelligence-2026,
+  title        = {CloudOps Intelligence: A Multi-Domain Cloud Operations
+                  Environment for LLM Agents},
+  author       = {le0atis},
   year         = {2026},
-  howpublished = {\url{https://huggingface.co/spaces/Le0AtiS/fire-swarm-simulator}},
-  note         = {Multi-step on-call SRE environment with realistic log/metric investigation,
-                  root cause analysis, and programmatic graders for three production
-                  incident patterns.}
+  howpublished = {Hugging Face Spaces},
+  url          = {https://huggingface.co/spaces/le0atis/aiops-incident-response},
+  note         = {OpenEnv-compatible. Combines FinOps, Security, and SRE
+                  incident response in a single text-based environment.}
 }
 ```
-
----
-
-## License
-
-BSD-3-Clause. See `LICENSE` for details.

@@ -3,17 +3,22 @@ spec_version: 1
 # ---------------------------------------------------------------------------
 # Environment identity
 # ---------------------------------------------------------------------------
-name:        aiops-incident-response
-version:     "0.1.0"
+name:        cloudops-intelligence
+version:     "0.2.0"
 description: >
-  AIOps Incident Response Environment — a multi-step on-call engineering
-  environment where an AI agent acts as a senior Site Reliability Engineer
-  responding to production incidents. The agent investigates service logs and
-  metrics, identifies root causes, applies targeted remediations, and verifies
-  recovery. Every task models a real incident pattern documented in SRE
-  literature: connection pool exhaustion (easy), cache stampede + missing DB
-  index (medium), and a three-way cascade of message queue disk saturation,
-  service OOM crash-loop, and database deadlock (hard).
+  CloudOps Intelligence — a multi-step cloud operations environment combining
+  FinOps cost optimisation, cloud security remediation, and AIOps incident
+  response into three progressively harder real-world tasks.
+
+  Every task simulates a scenario that Cloud/SRE teams encounter daily:
+  zombie resource cleanup, IAM misconfiguration causing service outages,
+  S3 public exposure, and coordinated DDoS attack response requiring live
+  Terraform WAF deployment.
+
+  The agent acts as a senior Cloud Operations Engineer using AWS CLI commands,
+  billing reports, VPC flow logs, IAM policy inspection, and Terraform to
+  investigate and remediate incidents — no game mechanics, no physics engine,
+  no spatial grids. Purely text-based cognitive work.
 
 # ---------------------------------------------------------------------------
 # Runtime
@@ -39,64 +44,63 @@ max_concurrent_envs: 4
 tasks:
   - id:          easy
     description: >
-      Payment Service Checkout Failures — single root cause: the application
-      database (user_db) connection pool is exhausted after a flash-sale traffic
-      spike (10/10 connections in use, 47 queries waiting). The agent must
-      view_logs(payment_service) to observe DB timeout errors, view_metrics
-      (user_db, connections) to confirm pool saturation, then apply_fix to
-      increase max_connections, and verify the payment service recovers.
-      3 services | 1 root cause | 15 step budget.
+      FinOps — AWS billing spike +340% ($12,400 vs $2,800 baseline).
+      Three EC2 m5.2xlarge instances from a cancelled project ("ProjectPhoenix")
+      have been running with 0% CPU utilisation for 32 days, burning $885/month.
+      The agent must: view_billing to identify the cost spike; run_cli
+      (aws ec2 describe-instances) or list_resources(ec2) to find the zombie
+      fleet; apply_fix(terminate) on each instance; verify the EC2 fleet
+      returns to healthy. 2 services | 1 root cause | 15 step budget.
     difficulty:  easy
     max_steps:   15
     grader:      programmatic
     score_range: [0.0, 1.0]
     grader_formula: >
-      score = 0.35 × root_cause_ratio     (root_causes_found / 1)
-            + 0.25 × service_health_ratio  (services_healthy / 3)
-            + 0.20 × normalised_reward     (cumulative_reward / steps_taken)
-            + 0.20 × completion_bonus      (1.0 if all fixed, 0.5 if partial)
+      score = 0.35 × rc_ratio + 0.25 × svc_ratio + 0.20 × reward_norm + 0.20 × bonus
 
   - id:          medium
     description: >
-      Product Catalog Degradation — two concurrent root causes triggered by a
-      single bad deployment: (1) Redis cache TTL was set to 0, causing 100%
-      cache miss rate and a stampede on the product DB; (2) a database migration
-      dropped the idx_category index, causing full 4.2 M-row table scans.
-      The agent must investigate catalog_service logs, Redis hit rate metrics,
-      and product_db slow-query metrics to identify both root causes and apply
-      two separate fixes. 5 services | 2 root causes | 25 step budget.
+      Security + SRE — A bad deployment (v4.2.0) triggered two simultaneous issues:
+      (1) S3 bucket 'prod-customer-data' ACL changed to public-read-write —
+      customer PII is publicly readable and writable; GDPR breach window open 3 hours.
+      (2) Payment service IAM role policy has a typo ('s3:GetObejct' instead of
+      's3:GetObject') — AWS silently ignores the invalid action, causing all
+      payment certificate loads to fail with 403; 89% checkout error rate.
+      The agent must: run_cli(aws s3api get-bucket-acl) to find the exposure;
+      run_cli(aws iam get-role-policy) to find the typo; apply_fix to block
+      public access; apply_fix to correct the IAM policy; verify payment service.
+      5 services | 2 root causes | 25 step budget.
     difficulty:  medium
     max_steps:   25
     grader:      programmatic
     score_range: [0.0, 1.0]
     grader_formula: >
-      score = 0.35 × root_cause_ratio     (root_causes_found / 2)
-            + 0.25 × service_health_ratio  (services_healthy / 5)
-            + 0.20 × normalised_reward
-            + 0.20 × completion_bonus
+      score = 0.35 × rc_ratio + 0.25 × svc_ratio + 0.20 × reward_norm + 0.20 × bonus
 
   - id:          hard
     description: >
-      Order Processing System P0 — three simultaneous independent failures
-      cascade into a complete order pipeline outage: (1) RabbitMQ disk full
-      (7-day retention with no cleanup filled the 60 GB disk, blocking all
-      producers); (2) order-service crash-loop (v3.1.0 introduced an unbounded
-      static cache causing OOM in < 4 min); (3) inventory DB deadlock (nightly
-      reporting job holding LOCK TABLES WRITE for 30 min). The agent must
-      identify each root cause independently, determine fix dependency order,
-      and apply all three remediations. 7 services | 3 root causes | 40 steps.
+      DDoS + FinOps + SRE — A coordinated volumetric DDoS from three CIDR ranges
+      (203.0.113.0/24, 198.51.100.0/24, 192.0.2.0/24) floods the API gateway at
+      840,000 req/min (700× baseline). Auto-scaling responds by launching 200 extra
+      EC2 instances — current cost $51,200/hr with max_capacity=500 (no ceiling).
+      The attack cascades: order_service crashes (thread pool exhausted) and
+      inventory_service degrades. Three root causes:
+      (1) No WAF Web ACL — agent must write_terraform(aws_wafv2_web_acl) with
+          IP block rules for all three malicious CIDRs and deploy it;
+      (2) Auto-scaling max_capacity=500 with no DDoS protection — agent must
+          apply_fix to cap max_capacity and scale in the excess instances;
+      (3) No API Gateway rate limiting — agent must enable throttling.
+      Agent must also analyse VPC flow logs (run_cli) to identify attack sources.
+      6 services | 3 root causes | 40 step budget.
     difficulty:  hard
     max_steps:   40
     grader:      programmatic
     score_range: [0.0, 1.0]
     grader_formula: >
-      score = 0.35 × root_cause_ratio     (root_causes_found / 3)
-            + 0.25 × service_health_ratio  (services_healthy / 7)
-            + 0.20 × normalised_reward
-            + 0.20 × completion_bonus
+      score = 0.35 × rc_ratio + 0.25 × svc_ratio + 0.20 × reward_norm + 0.20 × bonus
 
 # ---------------------------------------------------------------------------
-# Environment variables (declared for HF Spaces secrets UI)
+# Environment variables
 # ---------------------------------------------------------------------------
 env:
   API_BASE_URL:
@@ -108,13 +112,9 @@ env:
     required: false
     default: "gpt-4o-mini"
   HF_TOKEN:
-    description: "Bearer token / API key for the LLM inference endpoint (set via HF Spaces secrets)"
+    description: "Bearer token / API key for the LLM endpoint (HF Spaces secret)"
     required: true
   OPENENV_ENDPOINT:
     description: "Base URL of this environment server (default: http://localhost:7860)"
     required: false
     default: "http://localhost:7860"
-  WORKERS:
-    description: "Uvicorn worker count (default: 1)"
-    required: false
-    default: "1"

@@ -46,13 +46,14 @@ app: FastAPI = create_fastapi_app(
     concurrency_config=_concurrency,
 )
 
-app.title       = "AIOps Incident Response Environment"
-app.version     = "0.1.0"
+app.title       = "CloudOps Intelligence Environment"
+app.version     = "0.2.0"
 app.description = (
-    "Multi-step on-call engineering environment. "
-    "The agent investigates production incidents via logs and metrics, "
-    "identifies root causes, applies targeted fixes, and verifies recovery. "
-    "Three difficulty tiers: easy (1 root cause), medium (2), hard (3). "
+    "Multi-step cloud operations environment combining AIOps, FinOps, and Security. "
+    "Easy: FinOps cost anomaly (zombie EC2 fleet, $12k billing spike). "
+    "Medium: Security + SRE (S3 public exposure + IAM typo causing payment failures). "
+    "Hard: DDoS + FinOps + SRE (live attack, WAF Terraform deployment, runaway "
+    "auto-scaling at $51k/hr, cascading service failures). "
     "Compatible with OpenEnv ≥ 0.2.2."
 )
 
@@ -139,27 +140,35 @@ _TASK_METADATA: Dict[str, dict] = {
     "easy": {
         "id":          "easy",
         "title":       SCENARIOS["easy"]["title"],
+        "domain":      SCENARIOS["easy"]["domain"],
         "description": (
-            "Single root cause: database connection pool exhausted during a traffic spike. "
-            "The agent investigates payment service 503 errors, queries DB connection "
-            "metrics, identifies pool saturation, adjusts max_connections, and verifies "
-            "recovery. 3 services, 15 step budget."
+            "FinOps: Monthly AWS billing spiked 340% ($12,400 vs $2,800 baseline). "
+            "Three EC2 m5.2xlarge instances from a cancelled project have been running "
+            "with 0% CPU for 32 days, burning $885/month. "
+            "The agent must query billing reports, list idle EC2 instances, "
+            "identify the zombie fleet, and terminate all three instances. "
+            "2 services (billing_dashboard, ec2_fleet), 1 root cause, 15 step budget."
         ),
         "difficulty":  "easy",
         "max_steps":   15,
         "root_causes": 1,
-        "services":    3,
+        "services":    2,
         "score_range": [0.0, 1.0],
         "grader":      "programmatic",
     },
     "medium": {
         "id":          "medium",
         "title":       SCENARIOS["medium"]["title"],
+        "domain":      SCENARIOS["medium"]["domain"],
         "description": (
-            "Two root causes: Redis cache TTL mis-configured to 0 after a deployment "
-            "(causing cache stampede) AND a database index dropped by a migration "
-            "(causing full table scans). Requires multi-service investigation across "
-            "catalog, Redis, and product DB. 5 services, 25 step budget."
+            "Security + SRE: A bad deployment triggered two simultaneous issues. "
+            "(1) S3 bucket 'prod-customer-data' has public-read-write ACL — "
+            "customer PII exposed for 3 hours (GDPR breach window open). "
+            "(2) Payment service IAM role has a typo ('s3:GetObejct') causing "
+            "all payment certificate loads to fail with 403 — 89% checkout error rate. "
+            "Agent must inspect bucket ACL, audit IAM policy, apply both fixes, "
+            "and verify the payment service recovers. "
+            "5 services, 2 root causes, 25 step budget."
         ),
         "difficulty":  "medium",
         "max_steps":   25,
@@ -171,18 +180,23 @@ _TASK_METADATA: Dict[str, dict] = {
     "hard": {
         "id":          "hard",
         "title":       SCENARIOS["hard"]["title"],
+        "domain":      SCENARIOS["hard"]["domain"],
         "description": (
-            "Three concurrent root causes: (1) message queue disk full blocking all "
-            "async order events, (2) order service OOM crash-loop from a memory leak "
-            "introduced in v3.1.0, (3) inventory DB deadlock from a nightly reporting "
-            "job holding a table-level write lock. Agent must identify all three, "
-            "determine dependency order, and apply fixes sequentially. "
-            "7 services, 40 step budget."
+            "DDoS + FinOps + SRE: A coordinated DDoS from three CIDR ranges "
+            "(203.0.113.0/24, 198.51.100.0/24, 192.0.2.0/24) floods the API gateway "
+            "at 840k req/min. Auto-scaling responds by launching 200 extra EC2 instances "
+            "(cost: $51,200/hr and rising). The attack cascades to order and inventory "
+            "services. Three root causes: (1) no WAF Web ACL configured — agent must "
+            "write and deploy Terraform to block malicious CIDRs; "
+            "(2) auto-scaling max_capacity=500 with no DDoS protection — agent must "
+            "cap it and terminate excess instances; "
+            "(3) no API Gateway rate limiting configured. "
+            "6 services, 3 root causes, 40 step budget."
         ),
         "difficulty":  "hard",
         "max_steps":   40,
         "root_causes": 3,
-        "services":    7,
+        "services":    6,
         "score_range": [0.0, 1.0],
         "grader":      "programmatic",
     },

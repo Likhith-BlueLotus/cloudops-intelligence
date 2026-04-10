@@ -73,9 +73,9 @@ class TestTasksEndpoint:
         tasks = {t["id"]: t for t in client.get("/tasks").json()["tasks"]}
         assert tasks["hard"]["root_causes"] == 3
 
-    def test_task_services_easy_is_3(self):
+    def test_task_services_easy_is_2(self):
         tasks = {t["id"]: t for t in client.get("/tasks").json()["tasks"]}
-        assert tasks["easy"]["services"] == 3
+        assert tasks["easy"]["services"] == 2
 
 
 @pytest.mark.skipif(not FASTAPI_AVAILABLE, reason="FastAPI / server not available")
