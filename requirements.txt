@@ -1,0 +1,21 @@
+# Core OpenEnv framework — provides Environment base class, session pool,
+# ConcurrencyConfig, and the FastAPI app factory used in server/app.py.
+openenv-core>=0.2.2
+
+# Web server stack — FastAPI handles HTTP + WebSocket routing; uvicorn is
+# the ASGI server launched by the Dockerfile CMD and the pyproject.toml script.
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.0.0
+websockets>=12.0
+
+# Async HTTP client — used by the IncidentResponseEnv async client wrapper.
+httpx>=0.27.0
+
+# LLM client — mandatory per hackathon rules; inference.py uses the OpenAI
+# client pointed at the HuggingFace Router (or any OpenAI-compatible endpoint).
+openai>=1.14.0
+
+# Environment variable loader — reads .env locally; no-ops gracefully when the
+# file is absent (e.g. inside Docker where variables are injected at runtime).
+python-dotenv>=1.0.0
