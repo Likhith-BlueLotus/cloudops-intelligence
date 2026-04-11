@@ -296,12 +296,12 @@ score = 0.35 × (root_causes_found / total_root_causes)
 |------|--------|------------|-------|-----------|-------------|---------|
 | easy | FinOps | 1 | **0.8293** | 6 | 15 | ✅ |
 | medium | Security+SRE | 2 | **0.8740** | 4 | 25 | ✅ |
-| hard | DDoS+FinOps+SRE | 3 | **0.8432** | 10 | 40 | ✅ |
+| hard | DDoS+FinOps+SRE | 3 | **0.8462** | 10 | 40 | ✅ |
 | soc_easy | SecOps (brute-force) | 1 | **0.8587** | 3 | 15 | ✅ |
-| soc_medium | SecOps (C2+cred dump) | 2 | **0.8382** | 8 | 25 | ✅ |
+| soc_medium | SecOps (C2+cred dump) | 2 | **0.8423** | 7 | 25 | ✅ |
 | soc_hard | SecOps (APT) | 3 | **0.8693** | 6 | 40 | ✅ |
 
-**Primary mean (easy/medium/hard): 0.8488** | **Overall mean (all 6 tasks): 0.8521**
+**Primary mean (easy/medium/hard): 0.8498** | **Overall mean (all 6 tasks): 0.8533**
 *(gpt-4o-mini, single episode per task, investigation-first flow)*
 
 **All 6 tasks complete successfully** — scores are meaningfully differentiated by task difficulty,
