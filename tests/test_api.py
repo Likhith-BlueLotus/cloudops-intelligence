@@ -346,8 +346,8 @@ class TestSOCScenarios:
         # Should NOT say "api_gateway" (that is the WAF/DDoS context, not SOC)
         assert "api_gateway" not in obs["action_output"].lower() or "C2" in obs["action_output"]
 
-    def test_cascade_heal_only_heals_fixed_services(self):
-        """Regression: cascade-heal healed ALL services when ANY root cause was verified."""
+    def test_partial_fix_does_not_complete_episode(self):
+        """Regression: episode must stay open when only 1/3 RCs are fixed."""
         sid, _obs = self._reset("soc_hard")
         # Fix only the first RC (active_c2_beacon → network_ids)
         self._step(sid, {
@@ -362,3 +362,35 @@ class TestSOCScenarios:
         assert obs["done"] is False, "Episode must not be done with only 1/3 RCs fixed"
         assert obs["root_causes_found"] == 1
         assert obs["root_causes_total"] == 3
+
+    def test_all_services_heal_when_all_rcs_fixed(self):
+        """Regression: verifying after ALL RCs fixed must make all services healthy."""
+        sid, _obs = self._reset("soc_easy")
+        self._step(sid, {
+            "action_type": "apply_fix",
+            "target": "bastion_host",
+            "parameters": {"fix_type": "revoke_session", "config_key": "session_token"},
+        })
+        obs = self._step(sid, {"action_type": "verify", "target": "bastion_host"})
+        # All 2 services must be healthy — auth_service heals via full-recovery cascade
+        assert obs["services_healthy"] == obs["services_total"], (
+            f"Expected all services healthy, got {obs['services_healthy']}/{obs['services_total']}"
+        )
+        assert obs["done"] is True
+
+    def test_hard_task_all_services_heal_on_final_verify(self):
+        """Regression: hard task — all 6 services must heal when all 3 RCs fixed."""
+        sid, _obs = self._reset("hard")
+        self._step(sid, {"action_type": "write_terraform", "parameters": {
+            "resource_type": "aws_wafv2_web_acl",
+            "config": "ip_set_cidrs 203.0.113.0/24 198.51.100.0/24 192.0.2.0/24 block",
+        }})
+        self._step(sid, {"action_type": "apply_fix", "target": "auto_scaling",
+                         "parameters": {"fix_type": "adjust_config", "config_key": "max_capacity", "config_value": "20"}})
+        self._step(sid, {"action_type": "apply_fix", "target": "api_gateway",
+                         "parameters": {"fix_type": "enable_rate_limiting", "config_key": "throttle", "config_value": "1000"}})
+        obs = self._step(sid, {"action_type": "verify", "target": "api_gateway"})
+        assert obs["services_healthy"] == obs["services_total"], (
+            f"hard: expected 6/6 services healthy, got {obs['services_healthy']}/{obs['services_total']}"
+        )
+        assert obs["done"] is True

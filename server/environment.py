@@ -2014,44 +2014,37 @@ def _load_real_data() -> None:
             feodo_data = json.loads(feodo_path.read_text())
             records: list = feodo_data.get("records", [])
 
-            # Index by IP for O(1) lookup
-            feodo_index: dict = {r["ip_address"]: r for r in records if "ip_address" in r}
+            # The Feodo JSON uses key "ip" (not "ip_address")
+            feodo_index: dict = {
+                r["ip"]: r for r in records if "ip" in r
+            }
 
-            # SOC medium: 162.243.103.246 (QakBot/Emotet C2)
-            soc_m = SCENARIOS.get("soc_medium", {})
-            if "threat_indicators" in soc_m:
-                for ip in list(soc_m["threat_indicators"].get("malicious_ips", [])):
+            # Enrich all SOC scenarios whose malicious_ips appear in the feed
+            soc_tasks = {
+                "soc_medium": SCENARIOS.get("soc_medium", {}),
+                "soc_hard":   SCENARIOS.get("soc_hard",   {}),
+            }
+            for task_name, scenario in soc_tasks.items():
+                if "threat_indicators" not in scenario:
+                    continue
+                for ip in list(scenario["threat_indicators"].get("malicious_ips", [])):
                     entry = feodo_index.get(ip)
-                    if entry:
-                        soc_m["threat_indicators"]["intel"][ip].update({
-                            "status": entry.get("status", "offline"),
-                            "first_seen": entry.get("first_seen", ""),
-                            "last_online": entry.get("last_online", ""),
-                            "malware_family": entry.get("malware", "QakBot"),
-                            "port": entry.get("port", 8080),
-                            "country": entry.get("country", "US"),
-                            "_source": "abuse.ch Feodo Tracker (live)",
-                        })
-                        print(f"[data] ✓ Feodo: enriched soc_medium threat_intel for {ip} "
-                              f"(status={entry.get('status')})")
-
-            # SOC hard: 50.16.16.211 (QakBot C2, ONLINE)
-            soc_h = SCENARIOS.get("soc_hard", {})
-            if "threat_indicators" in soc_h:
-                for ip in list(soc_h["threat_indicators"].get("malicious_ips", [])):
-                    entry = feodo_index.get(ip)
-                    if entry:
-                        soc_h["threat_indicators"]["intel"][ip].update({
-                            "status": entry.get("status", "offline"),
-                            "first_seen": entry.get("first_seen", ""),
-                            "last_online": entry.get("last_online", ""),
-                            "malware_family": entry.get("malware", "QakBot"),
-                            "port": entry.get("port", 443),
-                            "country": entry.get("country", "US"),
-                            "_source": "abuse.ch Feodo Tracker (live)",
-                        })
-                        print(f"[data] ✓ Feodo: enriched soc_hard threat_intel for {ip} "
-                              f"(status={entry.get('status')})")
+                    if not entry:
+                        continue
+                    # Merge live Feodo fields into the scenario's intel dict.
+                    # The Feodo JSON uses: ip, port, malware, status, last_seen
+                    scenario["threat_indicators"]["intel"].setdefault(ip, {}).update({
+                        "status":         entry.get("status", "offline").upper(),
+                        "malware_family": entry.get("malware", "Unknown"),
+                        "port":           int(entry.get("port", 443)),
+                        "last_seen":      entry.get("last_seen", ""),
+                        "_source":        "abuse.ch Feodo Tracker (live)",
+                    })
+                    print(
+                        f"[data] ✓ Feodo: enriched {task_name} threat_intel for {ip} "
+                        f"malware={entry.get('malware')} status={entry.get('status')} "
+                        f"last_seen={entry.get('last_seen')}"
+                    )
         except Exception as e:
             print(f"[data] ✗ Feodo Tracker load error: {e}")
 
@@ -2635,9 +2628,12 @@ class IncidentResponseEnvironment(Environment):
 
         if cause_fixed and target in post_fix:
             svc.update(post_fix[target])
-            # Cascade-heal downstream services — but ONLY those whose root cause
-            # has also been applied.  Healing a service whose RC isn't fixed yet
-            # would give the agent a misleading "all healthy" signal.
+
+            all_rcs_fixed = set(self._scenario.get("root_causes", [])).issubset(
+                set(self._fixes_applied)
+            )
+
+            # Build the set of services reachable from currently-fixed root causes.
             fixed_rc_targets: set = set()
             fixed_rc_affected: set = set()
             for rc_id, fix_def in correct_fixes.items():
@@ -2651,12 +2647,17 @@ class IncidentResponseEnvironment(Environment):
             for downstream, ds_post in post_fix.items():
                 if downstream == target:
                     continue
-                # Only cascade-heal if this downstream service is the direct
-                # target or an affected_service of an already-resolved root cause.
-                if downstream in fixed_rc_targets or downstream in fixed_rc_affected:
-                    ds = self._services.get(downstream, {})
-                    if ds.get("status") in ("degraded", "down"):
-                        self._services[downstream].update(ds_post)
+                ds = self._services.get(downstream, {})
+                if ds.get("status") not in ("degraded", "down"):
+                    continue
+                if all_rcs_fixed:
+                    # All root causes resolved → full system recovery on verify.
+                    # This is correct: the verification pass confirms all remediations
+                    # are in effect and the system is back to a healthy steady state.
+                    self._services[downstream].update(ds_post)
+                elif downstream in fixed_rc_targets or downstream in fixed_rc_affected:
+                    # Partial fix: only heal services whose specific RC is applied.
+                    self._services[downstream].update(ds_post)
 
         status = svc.get("status", "unknown")
         reward = 0.0
