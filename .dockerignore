@@ -1,0 +1,35 @@
+# ── Secrets — NEVER bake these into the image ──────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Development artifacts ───────────────────────────────────────────────
+.git
+.github
+.gitignore
+.pytest_cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# ── Test / CI artifacts ─────────────────────────────────────────────────
+tests/
+.coverage
+htmlcov/
+.tox/
+
+# ── Editor / OS artifacts ───────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── Docs / notebooks ────────────────────────────────────────────────────
+*.md
+!README.md
+docs/
+notebooks/

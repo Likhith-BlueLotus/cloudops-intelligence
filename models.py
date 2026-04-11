@@ -2,36 +2,54 @@
 Pydantic data contracts for the CloudOps Intelligence Environment.
 
 Three top-level schemas implement the OpenEnv typed interface:
-  IncidentAction      — action taken by the on-call engineer agent
+  IncidentAction      — action taken by the on-call/SOC engineer agent
   IncidentObservation — current incident state observed by the agent
   IncidentState       — server-side ground truth for graders and loggers
 """
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 from openenv.core.env_server import Action, Observation, State
 
+# All legal action types across both CloudOps and SOC Analyst tracks.
+ActionType = Literal[
+    "view_logs",           # Retrieve recent log output for a service / component
+    "view_metrics",        # Retrieve a metric time-series (cpu, error_rate, …)
+    "list_resources",      # List AWS resources of a given type (ec2, s3, iam, …)
+    "run_cli",             # Run a mock AWS CLI command and get its output
+    "view_billing",        # View billing / cost data for a service or time period
+    "lookup_threat_intel", # Query the threat-intel feed for an IOC (IP / hash)
+    "apply_fix",           # Apply a targeted remediation to a service / component
+    "write_terraform",     # Write and apply a Terraform HCL resource (WAF, NACL, …)
+    "verify",              # Health-check a service to confirm successful recovery
+    "escalate",            # Escalate to senior on-call (ends episode, partial score)
+]
+
 
 class IncidentAction(Action):
     """
-    Action submitted by the on-call engineer agent each step.
+    Action submitted by the on-call / SOC engineer agent each step.
 
-    The agent investigates the incident by querying logs and metrics,
-    then applies targeted fixes and verifies resolution.
+    CloudOps investigation flow:
+      1. view_billing / list_resources / run_cli — identify cost anomaly or misconfiguration
+      2. view_logs / view_metrics              — gather evidence
+      3. apply_fix / write_terraform           — remediate root causes
+      4. verify                                — confirm health restored
 
-    action_type choices:
-      view_logs     — retrieve recent log output for a service
-      view_metrics  — retrieve a specific metric time-series for a service
-      apply_fix     — apply a remediation action to a service or component
-      verify        — run a health check against a service to confirm recovery
-      escalate      — escalate to senior on-call (terminates episode with partial score)
+    SOC Analyst investigation flow:
+      1. lookup_threat_intel                   — confirm IOC classification
+      2. view_logs / run_cli                   — query SIEM / endpoint telemetry
+      3. apply_fix (revoke_session / isolate_host / revoke_credentials / revoke_access)
+      4. verify                                — confirm containment
     """
 
-    action_type: str = Field(
+    action_type: ActionType = Field(
         ...,
         description=(
-            "Action to take: 'view_logs' | 'view_metrics' | 'apply_fix' | 'verify' | 'escalate'"
+            "Action to perform. CloudOps: 'view_logs' | 'view_metrics' | 'list_resources' | "
+            "'run_cli' | 'view_billing' | 'apply_fix' | 'write_terraform' | 'verify' | 'escalate'. "
+            "SOC track adds: 'lookup_threat_intel'."
         ),
     )
     target: Optional[str] = Field(
@@ -45,9 +63,18 @@ class IncidentAction(Action):
         default_factory=dict,
         description=(
             "Additional parameters depending on action_type:\n"
-            "  view_metrics: {'metric': 'connections|cpu|memory|error_rate', 'window': '5m|1h'}\n"
-            "  apply_fix:    {'fix_type': 'restart|adjust_config|clear_cache|increase_capacity|rollback',\n"
-            "                  'config_key': 'max_connections|heap_size|...', 'config_value': '200|2g|...'}"
+            "  view_logs:           {'lines': '50'}\n"
+            "  view_metrics:        {'metric': 'cpu|error_rate|latency', 'window': '5m|1h'}\n"
+            "  list_resources:      {'type': 'ec2|s3|iam|lambda'}\n"
+            "  run_cli:             {'command': 'aws ec2 describe-instances ...'}\n"
+            "  view_billing:        {'period': 'day|week|month', 'service': 'ec2|s3|...'}\n"
+            "  lookup_threat_intel: {'ioc': '1.2.3.4', 'ioc_type': 'ip|domain|hash'}\n"
+            "  apply_fix:           {'fix_type': 'terminate|block_public_access|fix_iam|\n"
+            "                         enable_rate_limiting|adjust_config|update_policy|\n"
+            "                         revoke_session|block_ip|isolate_host|quarantine|\n"
+            "                         revoke_credentials|revoke_access',\n"
+            "                        'config_key': '<resource-id|setting>', 'config_value': '<value>'}\n"
+            "  write_terraform:     {'resource_type': 'aws_wafv2_web_acl|aws_network_acl', 'config': '<hcl>'}"
         ),
     )
 
@@ -99,7 +126,8 @@ class IncidentObservation(Observation):
         default_factory=list,
         description=(
             "Reminder of legal action_type values for this step: "
-            "['view_logs', 'view_metrics', 'apply_fix', 'verify', 'escalate']."
+            "['view_logs', 'view_metrics', 'list_resources', 'run_cli', 'view_billing', "
+            "'lookup_threat_intel', 'apply_fix', 'write_terraform', 'verify', 'escalate']."
         ),
     )
     services_healthy: int = Field(
@@ -132,7 +160,13 @@ class IncidentState(State):
     Not revealed to the agent during rollout.
     """
 
-    task: str = Field(default="easy", description="Task difficulty: 'easy' | 'medium' | 'hard'.")
+    task: str = Field(
+        default="easy",
+        description=(
+            "Active task ID: 'easy' | 'medium' | 'hard' (CloudOps track) | "
+            "'soc_easy' | 'soc_medium' | 'soc_hard' (SOC Analyst track)."
+        ),
+    )
     incident_title: str = Field(default="", description="Short title of the active incident.")
     step_count: int = Field(default=0, ge=0, description="Steps taken so far in this episode.")
     actions_log: List[str] = Field(

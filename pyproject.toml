@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name             = "openenv-cloudops-intelligence"
-version          = "0.2.0"
-description      = "CloudOps Intelligence Environment — FinOps, Security, and Incident Response for OpenEnv"
+version          = "0.4.0"
+description      = "CloudOps + SOC Analyst dual-track environment — FinOps, Security, DDoS, and Threat Response for OpenEnv"
 requires-python  = ">=3.10"
 dependencies     = [
     "openenv-core[core]>=0.2.2",
