@@ -1472,8 +1472,9 @@ SCENARIOS: Dict[str, dict] = {
                 ],
                 "config_keys": [
                     "compromised_accounts", "eng.martinez", "svc_cicd",
-                    "admin_backup", "db_readonly", "all", "ntlm",
-                    "pass_the_hash", "credentials", "hashes",
+                    "admin_backup", "db_readonly", "svc_monitoring",
+                    "sys_audit", "dev_api", "qa_tester",
+                    "all", "ntlm", "pass_the_hash", "credentials", "hashes",
                 ],
                 "success_message": (
                     "✅ CREDENTIALS ROTATED — 8 accounts remediated\n"
@@ -2544,8 +2545,9 @@ class IncidentResponseEnvironment(Environment):
         "credential_dump": (
             "EVIDENCE: LSASS process memory was accessed on ENG-WORKSTATION-47 "
             "(MITRE T1003.001). 8 NTLM credential hashes extracted for accounts: "
-            "svc_deploy, svc_build, svc_monitor, admin, j.chen, m.patel, s.kumar, "
-            "r.wong. All 8 accounts must be treated as compromised."
+            "eng.martinez, svc_cicd, admin_backup, db_readonly, svc_monitoring, "
+            "sys_audit, dev_api, qa_tester. All 8 accounts must be treated as "
+            "compromised — revoke credentials for auth_service."
         ),
         "active_c2_beacon": (
             "EVIDENCE: PROD-SRV-12 has a persistent TLS beacon to 50.16.16.211:443 "
