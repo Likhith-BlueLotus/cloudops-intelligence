@@ -459,7 +459,7 @@ async def grade_task(task: str, body: GradeRequest = GradeRequest()) -> JSONResp
     if body.escalated and completion_bonus < 0.5:
         completion_bonus = max(completion_bonus, rc_ratio * 0.5)
 
-    score = float(min(1.0, max(0.0,
+    score = float(min(0.999, max(0.001,
         0.35 * rc_ratio
         + 0.25 * svc_ratio
         + 0.20 * reward_norm

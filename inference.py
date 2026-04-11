@@ -407,7 +407,7 @@ def _local_score(
         + 0.20 * min(1.0, max(0.0, reward_norm))
         + 0.20 * completion_bonus
     )
-    return round(min(1.0, max(0.0, score)), 4)
+    return round(min(0.999, max(0.001, score)), 4)
 
 
 # ---------------------------------------------------------------------------
@@ -438,8 +438,8 @@ def run_episode(task: str) -> dict:
         reset_resp = _reset_episode(task)
     except Exception as exc:
         log.error("Reset failed: %s", exc)
-        print(f"[END] success=false steps=0 score=0.0 rewards=none", flush=True)
-        return {"task": task, "score": 0.0, "steps": 0, "success": False}
+        print(f"[END] success=false steps=0 score=0.0010 rewards=none", flush=True)
+        return {"task": task, "score": 0.001, "steps": 0, "success": False}
 
     session_id = reset_resp.get("session_id", "")
     obs        = reset_resp.get("observation", reset_resp)
