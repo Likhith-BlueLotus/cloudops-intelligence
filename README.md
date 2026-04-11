@@ -31,7 +31,7 @@ tags:
 > Six tasks, real threat intelligence (Feodo Tracker, Spamhaus DROP, MITRE ATT&CK).
 
 [![OpenEnv Spec Compliant](https://img.shields.io/badge/OpenEnv-≥0.2.2-blue)](https://github.com/openenv/openenv)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-green.svg)](https://python.org)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-green.svg)](https://python.org)
 [![Tests](https://img.shields.io/badge/tests-40%20passing-brightgreen)](#testing)
 
 ---

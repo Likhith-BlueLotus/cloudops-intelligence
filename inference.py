@@ -407,7 +407,7 @@ def _local_score(
         + 0.20 * min(1.0, max(0.0, reward_norm))
         + 0.20 * completion_bonus
     )
-    return round(min(0.999, max(0.001, score)), 4)
+    return round(min(1.0, max(0.0, score)), 4)
 
 
 # ---------------------------------------------------------------------------
@@ -438,7 +438,7 @@ def run_episode(task: str) -> dict:
         reset_resp = _reset_episode(task)
     except Exception as exc:
         log.error("Reset failed: %s", exc)
-        print(f"[END] success=false steps=0 score=0.0 rewards=", flush=True)
+        print(f"[END] success=false steps=0 score=0.0 rewards=none", flush=True)
         return {"task": task, "score": 0.0, "steps": 0, "success": False}
 
     session_id = reset_resp.get("session_id", "")
@@ -581,7 +581,7 @@ def run_episode(task: str) -> dict:
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
     print(
         f"[END] success={str(success).lower()} steps={steps} "
-        f"score={score} rewards={rewards_str}",
+        f"score={score:.4f} rewards={rewards_str}",
         flush=True,
     )
     log.info(
@@ -604,7 +604,7 @@ def run_episode(task: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Main — validate env, run all 3 tasks, emit JSON_SCORES
+# Main — validate env, run all 6 tasks, emit JSON_SCORES
 # ---------------------------------------------------------------------------
 
 def main() -> None:
@@ -634,41 +634,40 @@ def main() -> None:
     # Bonus tasks (SOC Analyst track — additional difficulty levels)
     bonus_tasks   = ("soc_easy", "soc_medium", "soc_hard")
 
-    all_tasks = primary_tasks + bonus_tasks
-    for task in all_tasks:
+    for task in primary_tasks:
+        log.info("=" * 60)
+        result = run_episode(task)
+        scores[task] = result["score"]
+
+    for task in bonus_tasks:
         elapsed_so_far = time.time() - t_start
-        # Hard budget: stop if less than 3 min remains (avoid timeout)
         if elapsed_so_far > 17 * 60:
-            log.warning("Approaching 20-min budget — skipping remaining tasks")
+            log.warning("Approaching 20-min budget — skipping bonus tasks")
             break
         log.info("=" * 60)
         result = run_episode(task)
         scores[task] = result["score"]
-        log.info(
-            "TASK %s COMPLETE — steps=%d  score=%.4f",
-            task.upper(), result["steps"], result["score"],
-        )
 
     elapsed = time.time() - t_start
 
-    print("\n" + "=" * 60, flush=True)
-    print("FINAL SCORES", flush=True)
-    print("=" * 60, flush=True)
+    log.info("=" * 60)
+    log.info("FINAL SCORES")
+    log.info("=" * 60)
     primary_scores = [scores[t] for t in primary_tasks if t in scores]
     for task in primary_tasks:
         if task in scores:
-            print(f"  {task:<12} [PRIMARY]  score={scores[task]:.4f}", flush=True)
+            log.info("  %s [PRIMARY]  score=%.4f", task.ljust(12), scores[task])
     for task in bonus_tasks:
         if task in scores:
-            print(f"  {task:<12} [BONUS]    score={scores[task]:.4f}", flush=True)
+            log.info("  %s [BONUS]    score=%.4f", task.ljust(12), scores[task])
     if primary_scores:
         primary_mean = sum(primary_scores) / len(primary_scores)
-        print(f"\n  PRIMARY MEAN (easy/medium/hard): {primary_mean:.4f}", flush=True)
+        log.info("  PRIMARY MEAN (easy/medium/hard): %.4f", primary_mean)
     overall = sum(scores.values()) / max(1, len(scores))
-    print(f"  OVERALL MEAN (all tasks)       : {overall:.4f}", flush=True)
-    print(f"  Total elapsed                  : {elapsed:.1f}s", flush=True)
-    print("=" * 60, flush=True)
-    print(f'\nJSON_SCORES: {json.dumps(scores)}', flush=True)
+    log.info("  OVERALL MEAN (all tasks)       : %.4f", overall)
+    log.info("  Total elapsed                  : %.1fs", elapsed)
+    log.info("=" * 60)
+    print(f'JSON_SCORES: {json.dumps(scores)}', flush=True)
 
 
 if __name__ == "__main__":
