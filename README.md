@@ -345,7 +345,9 @@ python inference.py
 ```bash
 docker build -t cloudops-env .
 docker run -p 7860:7860 \
-  -e OPENAI_API_KEY=sk-... \
+  -e API_BASE_URL=https://api.openai.com/v1 \
+  -e MODEL_NAME=gpt-4o-mini \
+  -e HF_TOKEN=sk-... \
   cloudops-env
 ```
 

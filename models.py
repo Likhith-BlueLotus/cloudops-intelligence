@@ -174,6 +174,8 @@ class IncidentState(State):
     """
     Ground-truth server-side state used by graders and loggers.
     Not revealed to the agent during rollout.
+
+    Inherits ``episode_id`` and ``step_count`` from the OpenEnv ``State`` base.
     """
 
     task: str = Field(
@@ -184,7 +186,6 @@ class IncidentState(State):
         ),
     )
     incident_title: str = Field(default="", description="Short title of the active incident.")
-    step_count: int = Field(default=0, ge=0, description="Steps taken so far in this episode.")
     actions_log: List[str] = Field(
         default_factory=list,
         description="Chronological record of all actions taken, for replay and audit.",

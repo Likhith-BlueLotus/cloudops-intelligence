@@ -45,7 +45,7 @@ from openai import OpenAI
 # Credentials — reads from environment variables per hackathon spec
 # ---------------------------------------------------------------------------
 API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
-API_KEY      = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
+API_KEY      = os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY") or os.getenv("API_KEY")
 MODEL_NAME   = os.getenv("MODEL_NAME", "gpt-4o-mini")
 OPENENV_URL  = os.getenv("OPENENV_ENDPOINT", "http://localhost:7860")
 
@@ -469,6 +469,7 @@ def run_episode(task: str) -> dict:
         try:
             step_resp = _step(session_id, action)
             _consecutive_errors = 0
+            error_msg = None
         except Exception as exc:
             error_str = str(exc)
             # 422 = Pydantic validation error on the server — the LLM produced
@@ -614,7 +615,7 @@ def main() -> None:
     # Validate credentials
     if not API_KEY:
         raise SystemExit(
-            "HF_TOKEN (or API_KEY) environment variable is not set.\n"
+            "HF_TOKEN (or OPENAI_API_KEY) environment variable is not set.\n"
             "Export it before running:\n"
             "  export HF_TOKEN=<your-api-key>\n"
             "  export API_BASE_URL=https://api.openai.com/v1   # or HF router\n"

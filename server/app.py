@@ -211,19 +211,7 @@ async def state_endpoint(session_id: str = "") -> JSONResponse:
     if session is None:
         return JSONResponse(content={"escalated": False, "session_id": session_id}, status_code=200)
 
-    env = session.env
-    state = IncidentState(
-        task=env._task,
-        step_count=env._step_count,
-        max_steps=env._max_steps,
-        root_causes_identified=list(env._root_causes_identified),
-        fixes_applied=list(env._fixes_applied),
-        services_fixed=list(env._services_fixed),
-        cumulative_reward=env._cumulative_reward,
-        done=env._done,
-        escalated=env._escalated,
-        episode_id=env._episode_id,
-    )
+    state = session.env.state
     return JSONResponse(content=state.model_dump(), status_code=200)
 
 

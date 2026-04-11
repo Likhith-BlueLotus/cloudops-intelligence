@@ -1,7 +1,7 @@
 # =============================================================================
 # CloudOps Intelligence Environment — production Dockerfile
 #
-# Build context : fire_swarm_simulator/  (repo root — this file)
+# Build context : cloudops_intelligence_env/  (repo root)
 # Exposed port  : 7860  (HF Spaces standard)
 # Runtime user  : appuser (non-root, required by HF Spaces sandbox)
 #
@@ -36,9 +36,10 @@ COPY --chown=appuser:appuser . .
 # Pre-fetch real-world datasets (Spamhaus DROP, CIC-IDS2018, AWS Pricing,
 # MITRE ATT&CK) and bake them into the image so the environment uses
 # authentic data without needing external network access at runtime.
-# Runs as appuser with /app as cwd; output goes to data/ directory.
 # Failures are non-fatal — environment falls back to hardcoded baselines.
 RUN python data_fetcher.py || echo "[WARN] data_fetcher.py failed — using fallback data"
+
+RUN chown -R appuser:appuser /app/data 2>/dev/null || true
 
 EXPOSE 7860
 

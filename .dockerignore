@@ -13,6 +13,9 @@ __pycache__
 *.pyo
 *.pyd
 .Python
+venv/
+.venv/
+uv.lock
 
 # ── Test / CI artifacts ─────────────────────────────────────────────────
 tests/
