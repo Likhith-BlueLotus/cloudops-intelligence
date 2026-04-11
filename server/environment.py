@@ -62,6 +62,7 @@ W_VERIFY      = 0.10
 W_COMPLETION  = 0.20
 W_WRONG_FIX   = 0.05
 W_REDUNDANT   = 0.02
+W_CLUE        = 0.08  # reward for revealing a new root cause clue via investigation
 
 # ---------------------------------------------------------------------------
 # Scenario library
@@ -2149,6 +2150,7 @@ class IncidentResponseEnvironment(Environment):
         self._services_fixed: List[str] = []
         self._actions_log: List[str] = []
         self._queries_seen: List[str] = []
+        self._clues_revealed: set = set()
         self._step_count: int = 0
         self._max_steps: int = 15
         self._cumulative_reward: float = 0.0
@@ -2170,6 +2172,7 @@ class IncidentResponseEnvironment(Environment):
         self._services_fixed = []
         self._actions_log = []
         self._queries_seen = []
+        self._clues_revealed = set()
         self._step_count = 0
         self._max_steps = self._scenario["max_steps"]
         self._cumulative_reward = 0.0
@@ -2308,11 +2311,14 @@ class IncidentResponseEnvironment(Environment):
         if svc is None:
             return self._unknown_target(target), 0.0
         query_key = f"logs:{target}"
-        reward = -W_REDUNDANT if query_key in self._queries_seen else 0.0
-        if query_key not in self._queries_seen:
+        is_redundant = query_key in self._queries_seen
+        reward = -W_REDUNDANT if is_redundant else 0.0
+        if not is_redundant:
             self._queries_seen.append(query_key)
+            if self._reveal_clues_for_service(target):
+                reward += W_CLUE  # reward for discovering new evidence
         logs = svc.get("logs", f"[No logs for {target}]")
-        suffix = "\n[Repeated query]" if reward < 0 else ""
+        suffix = "\n[Repeated query — no new information]" if is_redundant else ""
         return f"=== LOGS: {target} ===\n{logs}{suffix}", reward
 
     def _handle_view_metrics(self, target: str, metric: str) -> Tuple[str, float]:
@@ -2326,31 +2332,40 @@ class IncidentResponseEnvironment(Environment):
                 0.0,
             )
         query_key = f"metrics:{target}:{metric}"
-        reward = -W_REDUNDANT if query_key in self._queries_seen else 0.0
-        if query_key not in self._queries_seen:
+        is_redundant = query_key in self._queries_seen
+        reward = -W_REDUNDANT if is_redundant else 0.0
+        if not is_redundant:
             self._queries_seen.append(query_key)
+            if self._reveal_clues_for_service(target):
+                reward += W_CLUE
         matched = next((v for k, v in metrics.items() if metric in k or k in metric), None)
         if matched:
-            suffix = "\n[Repeated query]" if reward < 0 else ""
+            suffix = "\n[Repeated query — no new information]" if is_redundant else ""
             return f"=== METRICS: {target}/{metric} ===\n{matched}{suffix}", reward
         return f"Metric '{metric}' not found for {target}. Available: {list(metrics.keys())}", 0.0
 
     def _handle_list_resources(self, resource_type: str, params: dict) -> Tuple[str, float]:
+        reward = 0.0
         # Try to find relevant service with list data
         for svc_name, svc in self._services.items():
             if resource_type in svc_name or svc_name in resource_type:
+                query_key = f"list:{resource_type}"
+                if query_key not in self._queries_seen:
+                    self._queries_seen.append(query_key)
+                    if self._reveal_clues_for_service(svc_name):
+                        reward += W_CLUE
                 metrics = svc.get("metrics", {})
                 for k, v in metrics.items():
                     if resource_type in k or "utilization" in k or "instances" in k:
-                        return f"=== LIST RESOURCES: {resource_type} ===\n{v}", 0.0
+                        return f"=== LIST RESOURCES: {resource_type} ===\n{v}", reward
                 if "logs" in svc:
-                    return f"=== LIST RESOURCES: {resource_type} ===\n{svc['logs']}", 0.0
+                    return f"=== LIST RESOURCES: {resource_type} ===\n{svc['logs']}", reward
         # Generic fallback
         return (
             f"=== LIST RESOURCES: {resource_type} ===\n"
             f"Use run_cli with 'aws {resource_type} describe-...' for detailed output.\n"
             f"Available services with resource data: {list(self._services.keys())}",
-            0.0,
+            reward,
         )
 
     def _handle_run_cli(self, command: str) -> Tuple[str, float]:
@@ -2363,9 +2378,15 @@ class IncidentResponseEnvironment(Environment):
                     if len(word) > 4
                 ):
                     query_key = f"cli:{cmd_key}"
-                    reward = -W_REDUNDANT if query_key in self._queries_seen else 0.0
-                    if query_key not in self._queries_seen:
+                    is_redundant = query_key in self._queries_seen
+                    reward = -W_REDUNDANT if is_redundant else 0.0
+                    if not is_redundant:
                         self._queries_seen.append(query_key)
+                        # Reveal clues for both the service and command keywords
+                        svc_clue = self._reveal_clues_for_service(svc_name)
+                        cmd_clue = self._reveal_clues_for_command(command)
+                        if svc_clue or cmd_clue:
+                            reward += W_CLUE
                     return f"$ {command}\n\n{output}", reward
 
         # Try metric-based CLI simulation
@@ -2374,109 +2395,208 @@ class IncidentResponseEnvironment(Environment):
                 metrics = svc.get("metrics", {})
                 if metrics:
                     first_metric = next(iter(metrics.values()))
-                    return f"$ {command}\n\n{first_metric}", 0.0
+                    # Still try to reveal clues for this general match
+                    reward = 0.0
+                    if self._reveal_clues_for_command(command):
+                        reward += W_CLUE
+                    return f"$ {command}\n\n{first_metric}", reward
 
+        # Generic CLI fallback — still attempt clue reveal from command keywords
+        reward = 0.0
+        if self._reveal_clues_for_command(command):
+            reward += W_CLUE
         return (
             f"$ {command}\n\nCommand executed. "
-            f"For pre-defined output, try commands like:\n"
+            f"For detailed output, try commands like:\n"
             f"  aws ec2 describe-instances\n"
             f"  aws s3api get-bucket-acl --bucket <name>\n"
             f"  aws iam get-role-policy --role-name <role>\n"
             f"  aws wafv2 list-web-acls\n"
             f"  aws vpc get-flow-logs\n"
             f"  aws autoscaling describe-auto-scaling-groups",
-            0.0,
+            reward,
         )
 
     def _handle_view_billing(self, target: str, period: str) -> Tuple[str, float]:
+        # Reveal billing-related clues (zombie EC2 cost, auto-scaling cost)
+        reward = 0.0
+        query_key = f"billing:{target or 'overall'}:{period}"
+        if query_key not in self._queries_seen:
+            self._queries_seen.append(query_key)
+            if self._reveal_clues_for_service("billing_dashboard"):
+                reward += W_CLUE
+            if self._reveal_clues_for_service("auto_scaling"):
+                reward += W_CLUE
+        else:
+            reward = -W_REDUNDANT
+
         # Search for billing/cost metrics
         for svc_name, svc in self._services.items():
             if "billing" in svc_name or "cost" in svc_name:
                 metrics = svc.get("metrics", {})
                 for k, v in metrics.items():
                     if any(w in k for w in ("cost", "billing", "ec2", "spend")):
-                        return f"=== BILLING REPORT ({period}) ===\n{v}", 0.0
+                        return f"=== BILLING REPORT ({period}) ===\n{v}", reward
                 logs = svc.get("logs", "")
                 if logs:
-                    return f"=== BILLING LOGS ===\n{logs}", 0.0
+                    return f"=== BILLING LOGS ===\n{logs}", reward
         # Search auto_scaling for cost data (hard task)
         for svc_name, svc in self._services.items():
             metrics = svc.get("metrics", {})
             for k, v in metrics.items():
                 if "cost" in k:
-                    return f"=== BILLING REPORT ({period}) ===\n{v}", 0.0
+                    return f"=== BILLING REPORT ({period}) ===\n{v}", reward
         return (
             f"=== BILLING REPORT ({period}) ===\n"
             f"No cost data available yet. Use run_cli('aws ce get-cost-and-usage ...') "
             f"or view_metrics(billing_dashboard, ec2_cost).",
-            0.0,
+            reward,
         )
 
-    # Canonical fix hints used in failure feedback — kept out of the matcher so
-    # they can be shown even when the root cause is already resolved.
+    # Maps service names, IOC strings, and CLI command keywords to the root cause
+    # IDs they reveal when investigated. An agent must investigate a relevant service
+    # before that root cause's evidence is shown in the observation.
+    _CLUE_TRIGGERS: Dict[str, List[str]] = {
+        # CloudOps track — service investigations
+        "billing_dashboard":      ["zombie_ec2_cost_overrun"],
+        "ec2_fleet":              ["zombie_ec2_cost_overrun"],
+        "s3_prod_customer_data":  ["s3_public_access_enabled"],
+        "payment_service":        ["s3_public_access_enabled", "iam_role_typo"],
+        "iam_payment_role":       ["iam_role_typo"],
+        "api_gateway":            ["waf_not_configured", "api_gateway_no_rate_limit"],
+        "waf_service":            ["waf_not_configured"],
+        "auto_scaling":           ["autoscaling_unbounded"],
+        # SOC Analyst track — service investigations
+        "bastion_host":           ["compromised_bastion_access"],
+        "endpoint_security":      ["malware_c2_beacon", "credential_dump",
+                                   "active_c2_beacon", "lateral_movement"],
+        "auth_service":           ["credential_dump"],
+        "network_ids":            ["active_c2_beacon"],
+        "s3_data_lake":           ["s3_data_exfiltration"],
+        # Threat intel lookups — IOC as key
+        "185.220.101.45":         ["compromised_bastion_access"],
+        "162.243.103.246":        ["malware_c2_beacon"],
+        "50.16.16.211":           ["active_c2_beacon", "s3_data_exfiltration"],
+        # CLI command keywords (run_cli)
+        "describe-instances":     ["zombie_ec2_cost_overrun"],
+        "get-bucket-acl":         ["s3_public_access_enabled"],
+        "get-role-policy":        ["iam_role_typo"],
+        "list-web-acls":          ["waf_not_configured"],
+        "get-flow-logs":          ["waf_not_configured", "autoscaling_unbounded"],
+        "flow-logs":              ["waf_not_configured", "autoscaling_unbounded"],
+        "describe-auto-scaling":  ["autoscaling_unbounded"],
+        "list-findings":          ["active_c2_beacon", "s3_data_exfiltration"],
+        "guardduty":              ["active_c2_beacon", "s3_data_exfiltration"],
+        "vpc":                    ["waf_not_configured"],
+    }
+
+    # Evidence descriptions shown ONLY after the agent has investigated
+    # the relevant service. These describe WHAT was found, not HOW to fix it.
+    # The agent must reason from evidence to the correct remediation action.
     _RC_HINTS: Dict[str, str] = {
-        "waf_not_configured": (
-            "No WAF Web ACL → write_terraform(resource_type='aws_wafv2_web_acl', "
-            "config='{ip_set_cidrs: [203.0.113.0/24, 198.51.100.0/24, 192.0.2.0/24], action: block}')"
-        ),
-        "autoscaling_unbounded": (
-            "Auto-scaling max_capacity=500 unbounded → "
-            "apply_fix(target='auto_scaling', fix_type='adjust_config', "
-            "config_key='max_capacity', config_value='20')"
-        ),
-        "api_gateway_no_rate_limit": (
-            "API Gateway has NO rate limiting — FINAL root cause → "
-            "apply_fix(target='api_gateway', fix_type='enable_rate_limiting', "
-            "config_key='throttle', config_value='1000')"
-        ),
         "zombie_ec2_cost_overrun": (
-            "Zombie EC2 fleet burning cost → "
-            "apply_fix(target='ec2_fleet', fix_type='terminate', config_key='zombie')"
+            "EVIDENCE: 3 × m5.2xlarge instances (i-0a1b2c3d, i-0e4f5a6b, i-0c7d8e9f) "
+            "are RUNNING with 0% CPU utilization for 32+ days. Tagged "
+            "Project=ProjectPhoenix (status=cancelled). Wasted cost: ~$885/month each. "
+            "These are zombie instances from a cancelled project."
         ),
         "s3_public_access_enabled": (
-            "S3 bucket public ACL → "
-            "apply_fix(target='s3_prod_customer_data', fix_type='block_public_access')"
+            "EVIDENCE: S3 bucket 'prod-customer-data' has ACL=public-read-write. "
+            "The bucket contains customer PII and payment records. GDPR breach window "
+            "has been open for ~3 hours. Public access must be blocked immediately."
         ),
         "iam_role_typo": (
-            "IAM policy typo 's3:GetObejct' → "
-            "apply_fix(target='iam_payment_role', fix_type='fix_iam', "
-            "config_key='s3:GetObejct', config_value='s3:GetObject')"
+            "EVIDENCE: IAM role 'payment-service-role' policy contains invalid action "
+            "'s3:GetObejct' (typo — note misspelling). AWS silently ignores invalid "
+            "IAM actions, so the payment service cannot read S3 objects, causing "
+            "403 errors on all certificate loads → 89% checkout failure rate."
         ),
-        # SOC Analyst track
+        "waf_not_configured": (
+            "EVIDENCE: aws wafv2 list-web-acls returns empty — no WAF Web ACL exists "
+            "for this account/region. VPC flow logs show attack traffic from "
+            "203.0.113.0/24, 198.51.100.0/24, and 192.0.2.0/24 at 840k req/min. "
+            "All attack traffic reaches the API Gateway unfiltered."
+        ),
+        "autoscaling_unbounded": (
+            "EVIDENCE: Auto Scaling group 'api-asg' has DesiredCapacity=200, "
+            "MaxSize=500 with no upper bound protection. Current EC2 cost: $51,200/hr "
+            "and climbing as DDoS traffic continues. The group is scaling in response "
+            "to DDoS-inflated CPU metrics — there is no ceiling configured."
+        ),
+        "api_gateway_no_rate_limit": (
+            "EVIDENCE: API Gateway 'prod-api' stage 'prod' has no UsagePlan or "
+            "throttling configured (ThrottlingBurstLimit=0, ThrottlingRateLimit=0). "
+            "All 840k req/min pass through to downstream services without rate limiting, "
+            "causing thread pool exhaustion in order_service and inventory_service."
+        ),
         "compromised_bastion_access": (
-            "Tor exit node 185.220.101.45 has active SSH session as svc_deploy → "
-            "lookup_threat_intel(ioc='185.220.101.45') then "
-            "apply_fix(target='bastion_host', fix_type='revoke_session', "
-            "config_key='session_token')"
+            "EVIDENCE: bastion-host auth.log shows 247 SSH failures then SUCCESS for "
+            "user svc_deploy from 185.220.101.45. Threat intel: confirmed Tor exit node "
+            "(abuse score 97/100, Spamhaus DROP listed). Active session is running "
+            "sudo commands and attempting to wget a remote implant."
         ),
         "malware_c2_beacon": (
-            "QakBot C2 beacon to 162.243.103.246:8080 from ENG-WORKSTATION-47 → "
-            "lookup_threat_intel(ioc='162.243.103.246') then "
-            "apply_fix(target='endpoint_security', fix_type='isolate_host', "
-            "config_key='ENG-WORKSTATION-47')"
+            "EVIDENCE: ENG-WORKSTATION-47 has active outbound TCP connection to "
+            "162.243.103.246:8080. Threat intel confirms: QakBot C2 server (Feodo "
+            "Tracker, ONLINE). Beacon interval ~300s. Process: explorer.exe (hollowed). "
+            "EDR flagged LSASS memory access on the same host (MITRE T1003.001)."
         ),
         "credential_dump": (
-            "LSASS dump exposed 8 AD accounts — rotate all → "
-            "apply_fix(target='auth_service', fix_type='revoke_credentials', "
-            "config_key='compromised_accounts')"
+            "EVIDENCE: LSASS process memory was accessed on ENG-WORKSTATION-47 "
+            "(MITRE T1003.001). 8 NTLM credential hashes extracted for accounts: "
+            "svc_deploy, svc_build, svc_monitor, admin, j.chen, m.patel, s.kumar, "
+            "r.wong. All 8 accounts must be treated as compromised."
         ),
         "active_c2_beacon": (
-            "QakBot C2 ONLINE at 50.16.16.211:443 — block at NACL FIRST → "
-            "lookup_threat_intel(ioc='50.16.16.211') then "
-            "write_terraform(resource_type='aws_network_acl', "
-            "config='{cidr: 50.16.16.211/32, rule: DENY, port: all}')"
+            "EVIDENCE: Multiple PROD hosts have persistent TLS connections to "
+            "50.16.16.211:443 (QakBot C2, ONLINE per Feodo Tracker, beacon 6h+). "
+            "GuardDuty finding: UnauthorizedAccess:IAMUser/TorIPCaller. "
+            "Affected hosts: PROD-SRV-03, PROD-SRV-07, PROD-SRV-09, DB-PRIMARY."
         ),
         "lateral_movement": (
-            "4 hosts compromised via WMI/SMB lateral movement → "
-            "apply_fix(target='endpoint_security', fix_type='isolate_host', "
-            "config_key='infected_hosts')"
+            "EVIDENCE: WMI/SMB lateral movement detected from PROD-SRV-03 to "
+            "PROD-SRV-07, PROD-SRV-09, and DB-PRIMARY (MITRE T1021). "
+            "All 4 hosts are compromised and must be isolated from the network "
+            "to prevent further propagation."
         ),
         "s3_data_exfiltration": (
-            "DataScienceRole exfiltrated 2.3 GB via stolen credentials → "
-            "apply_fix(target='s3_data_lake', fix_type='revoke_access', "
-            "config_key='compromised_iam_role')"
+            "EVIDENCE: DataScienceRole made 1,847 s3:GetObject API calls to "
+            "prod-data-lake from IP 50.16.16.211 (known C2). "
+            "Total data transferred: 2.3 GB. IAM session token was stolen via "
+            "credential theft. GuardDuty: S3 data exfiltration finding confirmed."
         ),
     }
+
+    def _reveal_clues_for_service(self, service: str) -> bool:
+        """Mark root cause clues as revealed when a service is investigated.
+
+        Returns True if at least one new clue was revealed in the current scenario.
+        The agent receives W_CLUE reward for each newly revealed clue.
+        """
+        rc_ids = self._CLUE_TRIGGERS.get(service, [])
+        scenario_rcs = set(self._scenario.get("root_causes", []))
+        new_clue = False
+        for rc_id in rc_ids:
+            if rc_id in scenario_rcs and rc_id not in self._clues_revealed:
+                self._clues_revealed.add(rc_id)
+                new_clue = True
+        return new_clue
+
+    def _reveal_clues_for_command(self, command: str) -> bool:
+        """Reveal root cause clues based on CLI command keywords.
+
+        Returns True if at least one new clue was revealed.
+        """
+        scenario_rcs = set(self._scenario.get("root_causes", []))
+        new_clue = False
+        command_lower = command.lower()
+        for keyword, rc_ids in self._CLUE_TRIGGERS.items():
+            if keyword in command_lower:
+                for rc_id in rc_ids:
+                    if rc_id in scenario_rcs and rc_id not in self._clues_revealed:
+                        self._clues_revealed.add(rc_id)
+                        new_clue = True
+        return new_clue
 
     def _handle_write_terraform(self, resource_type: str, config: str) -> Tuple[str, float]:
         """
@@ -2519,34 +2639,30 @@ class IncidentResponseEnvironment(Environment):
                 ]
                 next_hint = ""
                 if still_remaining:
-                    hints = [
-                        f"  • {r.replace('_', ' ').upper()}: "
-                        f"{self._RC_HINTS.get(r, 'investigate further')}"
-                        for r in still_remaining
+                    revealed_still = [r for r in still_remaining if r in self._clues_revealed]
+                    hidden_still   = len(still_remaining) - len(revealed_still)
+                    hint_parts = [
+                        f"  • [{r.replace('_', ' ').upper()}] "
+                        f"{self._RC_HINTS.get(r, 'evidence available — determine the fix')}"
+                        for r in revealed_still
                     ]
+                    if hidden_still > 0:
+                        hint_parts.append(
+                            f"  • {hidden_still} more root cause(s) — investigate remaining degraded services"
+                        )
                     next_hint = (
                         f"\n\n🎯 STILL UNRESOLVED ({len(still_remaining)} remaining):\n"
-                        + "\n".join(hints)
+                        + "\n".join(hint_parts)
                     )
-                # Use scenario-defined success_message when available
                 custom_msg = fix_def.get("success_message", "")
-                if custom_msg:
-                    body = (
-                        f"✅ TERRAFORM VALIDATED & APPLIED\n"
-                        f"Resource   : {resource_type}\n"
-                        f"Root cause : {rc_id.replace('_', ' ')} — RESOLVED\n"
-                        f"{custom_msg}\n"
-                        f"Reward: +{reward:.2f}"
-                        f"{next_hint}"
-                    )
-                else:
-                    body = (
-                        f"✅ TERRAFORM VALIDATED & APPLIED\n"
-                        f"Resource   : {resource_type}\n"
-                        f"Root cause : {rc_id.replace('_', ' ')} — RESOLVED\n"
-                        f"Reward: +{reward:.2f}"
-                        f"{next_hint}"
-                    )
+                body = (
+                    f"✅ TERRAFORM VALIDATED & APPLIED\n"
+                    f"Resource   : {resource_type}\n"
+                    f"Root cause : {rc_id.replace('_', ' ')} — RESOLVED\n"
+                    + (f"{custom_msg}\n" if custom_msg else "")
+                    + f"Reward: +{reward:.2f}"
+                    + next_hint
+                )
                 return body, reward
 
         # ── No remaining root cause was addressed ──────────────────────────────
@@ -2566,15 +2682,20 @@ class IncidentResponseEnvironment(Environment):
                 + ", ".join(f"✅ {r.replace('_', ' ')}" for r in already)
             )
 
-        remaining_lines = [
-            f"  • {r.replace('_', ' ').upper()}: "
-            f"{self._RC_HINTS.get(r, 'investigate further')}"
-            for r in remaining
-        ]
+        remaining_lines = []
+        for r in remaining:
+            if r in self._clues_revealed:
+                remaining_lines.append(
+                    f"  • [{r.replace('_', ' ').upper()}] "
+                    f"{self._RC_HINTS.get(r, 'investigate further')}"
+                )
+            else:
+                remaining_lines.append(
+                    "  • [UNIDENTIFIED ROOT CAUSE] — investigate degraded services to find evidence"
+                )
         return (
             f"⚠️  Terraform does NOT address any remaining root cause.{already_msg}\n\n"
-            f"🎯 UNRESOLVED ROOT CAUSES ({len(remaining)} remaining — use apply_fix or "
-            f"write_terraform as appropriate):\n"
+            f"Continue investigating ({len(remaining)} root cause(s) remaining):\n"
             + "\n".join(remaining_lines)
         ), -W_WRONG_FIX
 
@@ -2625,40 +2746,38 @@ class IncidentResponseEnvironment(Environment):
                 ]
                 next_hint = ""
                 if still_remaining:
-                    hints = [
-                        f"  • {r.replace('_', ' ').upper()}: "
-                        f"{self._RC_HINTS.get(r, 'investigate further')}"
-                        for r in still_remaining
+                    revealed_still = [r for r in still_remaining if r in self._clues_revealed]
+                    hidden_still   = len(still_remaining) - len(revealed_still)
+                    hint_parts = [
+                        f"  • [{r.replace('_', ' ').upper()}] "
+                        f"{self._RC_HINTS.get(r, 'evidence available — determine the fix')}"
+                        for r in revealed_still
                     ]
+                    if hidden_still > 0:
+                        hint_parts.append(
+                            f"  • {hidden_still} more root cause(s) — investigate remaining degraded services"
+                        )
                     next_hint = (
                         f"\n\n🎯 STILL UNRESOLVED ({len(still_remaining)} remaining):\n"
-                        + "\n".join(hints)
+                        + "\n".join(hint_parts)
                     )
                 else:
                     next_hint = f"\n\n✅ All root causes resolved! Call verify({svc_target!r}) to confirm."
-                # Use scenario-defined success_message when available
                 custom_msg = fix_def.get("success_message", "")
-                if custom_msg:
-                    body = (
-                        f"{custom_msg}\n"
-                        f"Reward: +{reward:.2f}"
-                        f"{next_hint}"
-                    )
-                else:
-                    fix_desc = (
-                        f"adjust {config_key}={config_value}" if config_key else fix_type
-                    )
-                    body = (
-                        f"✅ FIX APPLIED: {fix_desc} on {svc_target}\n"
-                        f"Root cause resolved: {rc_id.replace('_', ' ')}\n"
-                        f"Reward: +{reward:.2f}"
-                        f"{next_hint}"
-                    )
+                fix_desc = (
+                    f"adjust {config_key}={config_value}" if config_key else fix_type
+                )
+                body = (
+                    (f"{custom_msg}\n" if custom_msg else f"✅ FIX APPLIED: {fix_desc} on {svc_target}\n")
+                    + f"Root cause resolved: {rc_id.replace('_', ' ')}\n"
+                    + f"Reward: +{reward:.2f}"
+                    + next_hint
+                )
                 return body, reward
 
         return (
             f"⚠️  Fix '{fix_type}' on '{target}' did not match any remaining root cause.\n"
-            f"Continue investigating logs/metrics/billing to identify what to fix."
+            f"Investigate logs, metrics, and CLI output to identify the correct target and fix type."
         ), -W_WRONG_FIX
 
     def _handle_verify(self, target: str) -> Tuple[str, float]:
@@ -2825,8 +2944,11 @@ class IncidentResponseEnvironment(Environment):
                 f"  ⚡ Recommended: {entry.get('recommended_action', '')}",
             ]
             output = "\n".join(lines)
-            # Small reward for first lookup of a confirmed malicious IOC
-            reward = 0.0 if is_redundant else 0.05
+            # Reveal clues for this IOC and reward first lookup
+            if not is_redundant and self._reveal_clues_for_service(ioc_clean):
+                reward = W_CLUE
+            else:
+                reward = 0.0 if is_redundant else 0.05
         else:
             output = (
                 f"🔍 THREAT INTEL REPORT — {ioc}\n"
@@ -2892,11 +3014,13 @@ class IncidentResponseEnvironment(Environment):
             for name, svc in self._services.items()
         ]
 
-        correct_fixes = self._scenario.get("correct_fixes", {})
         remaining_rcs = [
             rc for rc in self._scenario.get("root_causes", [])
             if rc not in self._fixes_applied
         ]
+        # Split remaining root causes into revealed (investigated) and hidden
+        revealed_remaining = [rc for rc in remaining_rcs if rc in self._clues_revealed]
+        hidden_count = len(remaining_rcs) - len(revealed_remaining)
 
         situation = (
             f"=== STATUS — step {self._step_count}/{self._max_steps} ===\n"
@@ -2906,20 +3030,28 @@ class IncidentResponseEnvironment(Environment):
             f"Root causes: {rc_found}/{rc_total} resolved\n"
             f"Resolved: {'YES ✅' if self._all_resolved() else 'NO ⏳'}\n"
         )
-        if remaining_rcs:
+        if revealed_remaining:
             hint_lines = [
-                f"  → {rc.replace('_', ' ').upper()}: "
-                f"{self._RC_HINTS.get(rc, 'investigate with logs/metrics/CLI')}"
-                for rc in remaining_rcs
+                f"  [{rc.replace('_', ' ').upper()}] {self._RC_HINTS.get(rc, 'evidence found')}"
+                for rc in revealed_remaining
             ]
-            situation += "UNRESOLVED ROOT CAUSES:\n" + "\n".join(hint_lines) + "\n"
-        else:
-            # All root causes fixed — direct the agent to close the episode
+            situation += "EVIDENCE FOUND — ROOT CAUSES TO REMEDIATE:\n" + "\n".join(hint_lines) + "\n"
+        if hidden_count > 0:
+            degraded_svcs = [
+                name for name, svc in self._services.items()
+                if svc.get("status") in ("degraded", "down")
+            ]
+            situation += (
+                f"\n⚠ {hidden_count} more root cause(s) not yet identified. "
+                f"Investigate affected services: {degraded_svcs}\n"
+            )
+        if not remaining_rcs:
+            # All root causes fixed — direct the agent to verify
             verify_targets = self._scenario.get("verify_services", [])
             if verify_targets and not self._all_resolved():
                 verify_call = f"verify({verify_targets[0]})"
                 situation += (
-                    f"✅ All root causes resolved!  "
+                    f"✅ All root causes resolved! "
                     f"Call verify() to confirm service health and complete the episode.\n"
                     f"  e.g. {verify_call}\n"
                 )

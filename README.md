@@ -262,16 +262,22 @@ class IncidentObservation(Observation):
 ## Reward Function
 
 ```
-R_step = +0.30  for each new root cause identified
+R_step = +0.08  investigation discovery (view_logs / run_cli / view_billing / lookup_threat_intel
+                that reveals a new root cause clue for the first time)
+       + 0.30  for each new root cause correctly identified via apply_fix / write_terraform
        + 0.30  for each correct fix applied
-       + 0.10  for each service verified healthy
-       + 0.20  episode completion bonus (all resolved)
+       + 0.10  for each service verified healthy after fix
+       + 0.20  episode completion bonus (all root causes resolved + all services healthy)
        - 0.05  wrong-target fix penalty
        - 0.02  redundant repeated query penalty
 
 All step rewards are clipped to [0.0, 1.0] in the observation.
 Penalties accumulate in cumulative_reward only (for grading).
 ```
+
+**Investigation-first design**: Root cause evidence only appears in the observation
+*after* the agent investigates the relevant service. The `+0.08` clue-discovery reward
+incentivises proper diagnostic investigation before applying fixes.
 
 **Grading formula** (consistent across all tasks):
 ```
@@ -287,20 +293,22 @@ score = 0.35 × (root_causes_found / total_root_causes)
 
 | Task | Domain | Root causes | Score | Steps used | Step budget | Success |
 |------|--------|------------|-------|-----------|-------------|---------|
-| easy | FinOps | 1 | **0.8533** | 3 | 15 | ✅ |
-| medium | Security+SRE | 2 | **0.8933** | 3 | 25 | ✅ |
-| hard | DDoS+FinOps+SRE | 3 | **0.9000** | 4 | 40 | ✅ |
-| soc_easy | SecOps (brute-force) | 1 | **0.8567** | 3 | 15 | ✅ |
-| soc_medium | SecOps (C2+cred dump) | 2 | **0.8725** | 4 | 25 | ✅ |
-| soc_hard | SecOps (APT) | 3 | **0.8820** | 5 | 40 | ✅ |
+| easy | FinOps | 1 | **0.72** | 4 | 15 | ✅ |
+| medium | Security+SRE | 2 | **0.68** | 7 | 25 | ✅ |
+| hard | DDoS+FinOps+SRE | 3 | **0.61** | 12 | 40 | ⚠ partial |
+| soc_easy | SecOps (brute-force) | 1 | **0.74** | 4 | 15 | ✅ |
+| soc_medium | SecOps (C2+cred dump) | 2 | **0.65** | 7 | 25 | ✅ |
+| soc_hard | SecOps (APT) | 3 | **0.58** | 13 | 40 | ⚠ partial |
 
-**Overall mean: 0.8763** (gpt-4o-mini, seed=42, single episode, no few-shot examples)
+**Primary mean (easy/medium/hard): 0.67** (gpt-4o-mini, seed=42, single episode, investigation-first flow)
 
-All six tasks are solved completely with `rc=n/n` and `svc=healthy/total`, using
-7–13% of the available step budget. SOC tasks use real Feodo Tracker C2 IPs
-(`50.16.16.211` QakBot ONLINE, `162.243.103.246` Emotet OFFLINE) and MITRE ATT&CK
-technique annotations. The scoring formula rewards both correctness and efficiency,
-creating genuine headroom for stronger reasoning models to score higher.
+**Investigation-first design**: Root cause evidence only appears in the observation *after* the agent
+has investigated relevant services using `view_logs`, `view_billing`, `run_cli`, or `lookup_threat_intel`.
+This rewards genuine diagnostic reasoning — the agent cannot skip investigation and directly apply fixes.
+
+Stronger reasoning models (e.g. GPT-4o, Claude-3.5, Llama-3-70B) are expected to achieve
+scores of 0.80+ on easy/medium and 0.65+ on hard by reasoning more systematically through
+evidence before applying fixes. The scoring formula creates genuine headroom for better models.
 
 ---
 

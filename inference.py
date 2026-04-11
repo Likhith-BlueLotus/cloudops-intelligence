@@ -91,16 +91,18 @@ TEMPERATURE        = 0.1  # low temperature for deterministic investigation
 # ---------------------------------------------------------------------------
 SYSTEM_PROMPT = """You are a senior Cloud Operations Engineer and SOC Analyst at a large technology company.
 You respond to cloud operations incidents (FinOps, SRE, DDoS) and security operations alerts
-(brute-force, malware C2, credential theft, data exfiltration). Your job is to:
-1. Investigate the incident using logs, metrics, billing data, SIEM alerts, and threat intelligence
-2. Identify root cause(s) — cost issue, security misconfiguration, service failure, or active threat
-3. Apply targeted fixes (revoke sessions, isolate hosts, rotate credentials, deploy Terraform)
-4. Verify that all services and security controls return to a healthy/secure state
+(brute-force, malware C2, credential theft, data exfiltration).
 
-You must respond with a single JSON action object. Do not output any other text.
+CRITICAL WORKFLOW — you MUST follow this investigation-first approach:
+1. INVESTIGATE FIRST: Use view_logs, view_billing, run_cli, or lookup_threat_intel to gather evidence.
+   Root causes will only appear in the status report AFTER you have investigated relevant services.
+2. IDENTIFY ROOT CAUSES: Evidence of root causes appears in "EVIDENCE FOUND" section after investigation.
+   Read the evidence carefully to understand what went wrong and what fix is appropriate.
+3. APPLY FIXES: Based on the evidence, apply the correct remediation using apply_fix or write_terraform.
+4. VERIFY: Confirm services are healthy with verify().
 
 Available action types:
-- view_logs: Read recent log entries for a service or resource
+- view_logs: Read logs for a service — reveals root cause evidence
   {"action_type": "view_logs", "target": "<service_name>"}
 
 - view_metrics: Read a specific metric time-series
@@ -109,38 +111,41 @@ Available action types:
 - list_resources: List cloud resources of a given type
   {"action_type": "list_resources", "parameters": {"type": "ec2|s3|iam|waf"}}
 
-- run_cli: Execute an AWS CLI or system command (simulated)
+- run_cli: Execute an AWS CLI command (simulated) — reveals root cause evidence
   {"action_type": "run_cli", "parameters": {"command": "aws ec2 describe-instances ..."}}
 
-- view_billing: View cost and usage reports
+- view_billing: View cost and usage reports — reveals cost anomaly evidence
   {"action_type": "view_billing", "target": "ec2|overall", "parameters": {"period": "month|realtime"}}
 
-- lookup_threat_intel: Query threat intelligence feeds (Feodo Tracker, Spamhaus DROP) for an IOC
+- lookup_threat_intel: Query threat intelligence feeds for an IOC — reveals threat evidence
   {"action_type": "lookup_threat_intel", "parameters": {"ioc": "<ip_address>", "ioc_type": "ip"}}
-  Use this FIRST when you see a suspicious IP in a SOC alert to confirm if it is a known C2/botnet.
+  Use this when you see a suspicious IP in a SOC alert.
 
-- apply_fix: Apply a targeted remediation to a resource
+- apply_fix: Apply a targeted remediation based on evidence you have gathered
   {"action_type": "apply_fix", "target": "<resource_name>", "parameters": {"fix_type": "<type>", "config_key": "<key>", "config_value": "<value>"}}
   CloudOps fix_types: terminate, block_public_access, fix_iam, adjust_config, enable_rate_limiting
   SOC fix_types: revoke_session, block_ip, isolate_host, quarantine, revoke_credentials, revoke_access
 
-- write_terraform: Write and deploy Terraform configuration (WAF rules, network ACLs, firewall rules)
+- write_terraform: Write and deploy Terraform configuration (WAF rules, network ACLs)
   {"action_type": "write_terraform", "parameters": {"resource_type": "aws_wafv2_web_acl|aws_network_acl", "config": "<config>"}}
 
 - verify: Confirm a service/resource is healthy or secured after a fix
   {"action_type": "verify", "target": "<service_name>"}
 
-- escalate: Escalate to senior engineer (use as last resort)
+- escalate: Escalate to senior engineer (use only if truly stuck)
   {"action_type": "escalate"}
 
 Investigation strategy by domain:
-FINOPS:   view_billing → list_resources(ec2) → apply_fix(terminate) → verify
-SECURITY: run_cli(aws s3api/iam) → apply_fix → verify
-SRE:      view_logs → view_metrics → apply_fix → verify
-DDOS:     view_logs(api_gateway) → run_cli(vpc flow-logs) → write_terraform(wafv2) → verify
-SOC:      view_logs(siem_service) → lookup_threat_intel(suspicious_ip) → apply_fix(isolate/revoke) → verify
+FINOPS:   view_billing(billing_dashboard) → see evidence → apply_fix(terminate zombie instances) → verify
+SECURITY: view_logs(payment_service) + run_cli(aws s3api get-bucket-acl) → see evidence → apply_fix → verify
+SRE:      view_logs(service) → view_metrics → apply_fix → verify
+DDOS:     view_logs(api_gateway) + run_cli(aws vpc get-flow-logs) → see evidence → write_terraform(wafv2) → apply_fix → verify
+SOC:      view_logs(siem/endpoint) + lookup_threat_intel(suspicious_ip) → see evidence → apply_fix(isolate/revoke) → verify
 
-Respond with ONLY a valid JSON object like: {"action_type": "lookup_threat_intel", "parameters": {"ioc": "1.2.3.4", "ioc_type": "ip"}}"""
+IMPORTANT: The status report shows "EVIDENCE FOUND" ONLY after you investigate relevant services.
+Start by investigating the degraded/down services listed in the status report.
+
+Respond with ONLY a valid JSON object like: {"action_type": "view_logs", "target": "api_gateway"}"""
 
 # ---------------------------------------------------------------------------
 # HTTP helpers (direct HTTP to avoid asyncio complexity)
@@ -496,7 +501,7 @@ def run_episode(task: str) -> dict:
 def main() -> None:
     log.info("Model : %s", MODEL_NAME)
     log.info("Server: %s", OPENENV_URL)
-    log.info("Budget: 20 min")
+    log.info("Budget: 20 min max")
 
     # Validate credentials
     if not API_KEY:
@@ -508,14 +513,25 @@ def main() -> None:
             "  export MODEL_NAME=gpt-4o-mini"
         )
 
-    # Wait for server
+    # Wait for server to be ready
     if not _ping_health():
         raise SystemExit(f"Server at {OPENENV_URL} is not reachable. Start it first.")
 
     scores: Dict[str, float] = {}
     t_start = time.time()
 
-    for task in ("easy", "medium", "hard", "soc_easy", "soc_medium", "soc_hard"):
+    # Primary tasks (required minimum: easy → medium → hard)
+    primary_tasks = ("easy", "medium", "hard")
+    # Bonus tasks (SOC Analyst track — additional difficulty levels)
+    bonus_tasks   = ("soc_easy", "soc_medium", "soc_hard")
+
+    all_tasks = primary_tasks + bonus_tasks
+    for task in all_tasks:
+        elapsed_so_far = time.time() - t_start
+        # Hard budget: stop if less than 3 min remains (avoid timeout)
+        if elapsed_so_far > 17 * 60:
+            log.warning("Approaching 20-min budget — skipping remaining tasks")
+            break
         log.info("=" * 60)
         result = run_episode(task)
         scores[task] = result["score"]
@@ -529,11 +545,19 @@ def main() -> None:
     print("\n" + "=" * 60, flush=True)
     print("FINAL SCORES", flush=True)
     print("=" * 60, flush=True)
-    for task, score in scores.items():
-        print(f"  {task:<10} score={score:.4f}", flush=True)
-    overall = sum(scores.values()) / len(scores)
-    print(f"\n  OVERALL (mean): {overall:.4f}", flush=True)
-    print(f"  Total elapsed : {elapsed:.1f}s", flush=True)
+    primary_scores = [scores[t] for t in primary_tasks if t in scores]
+    for task in primary_tasks:
+        if task in scores:
+            print(f"  {task:<12} [PRIMARY]  score={scores[task]:.4f}", flush=True)
+    for task in bonus_tasks:
+        if task in scores:
+            print(f"  {task:<12} [BONUS]    score={scores[task]:.4f}", flush=True)
+    if primary_scores:
+        primary_mean = sum(primary_scores) / len(primary_scores)
+        print(f"\n  PRIMARY MEAN (easy/medium/hard): {primary_mean:.4f}", flush=True)
+    overall = sum(scores.values()) / max(1, len(scores))
+    print(f"  OVERALL MEAN (all tasks)       : {overall:.4f}", flush=True)
+    print(f"  Total elapsed                  : {elapsed:.1f}s", flush=True)
     print("=" * 60, flush=True)
     print(f'\nJSON_SCORES: {json.dumps(scores)}', flush=True)
 
